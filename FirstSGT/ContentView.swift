@@ -34,7 +34,7 @@ enum SoldierColor: Int, Comparable {
         }
     }
     
-    static func from(cellColor: CellColor, value: String) -> SoldierColor? {
+    static func from(cellColor: SheetsService.CellColor, value: String) -> SoldierColor? {
         // P = hidden
         if value == "P" { return nil }
         
