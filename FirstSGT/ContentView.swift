@@ -16,10 +16,10 @@ struct Soldier: Identifiable, Equatable {
 }
 
 enum SoldierColor: Int, Comparable {
-    case purple = 0
-    case blue = 1
-    case yellow = 2
-    case gray = 3
+    case gray = 0      // Gray first now
+    case purple = 1
+    case blue = 2
+    case yellow = 3
     
     static func < (lhs: SoldierColor, rhs: SoldierColor) -> Bool {
         lhs.rawValue < rhs.rawValue
@@ -27,19 +27,28 @@ enum SoldierColor: Int, Comparable {
     
     var color: Color {
         switch self {
+        case .gray: return Color(.systemGray4)
         case .purple: return .purple
         case .blue: return .blue
         case .yellow: return .yellow
-        case .gray: return Color(.systemGray4)
         }
     }
     
-    static func from(value: String) -> SoldierColor? {
+    static func from(cellColor: CellColor, value: String) -> SoldierColor? {
+        // P = hidden
         if value == "P" { return nil }
-        if value == "ROTC" { return .purple }
-        if value.hasPrefix("E (t-") { return .yellow }
-        if value.hasPrefix("E (") { return .blue }
-        return .gray
+        
+        // Dark gray = skip entirely
+        if cellColor == .darkGray { return nil }
+        
+        // Use the actual cell background color
+        switch cellColor {
+        case .purple: return .purple
+        case .blue: return .blue
+        case .yellow: return .yellow
+        case .gray: return .gray
+        case .darkGray: return nil
+        }
     }
 }
 
@@ -411,43 +420,43 @@ struct ContentView: View {
     }
     
     private func loadSoldiers() async {
-    print("👥 [loadSoldiers] Loading soldiers...")
-    
-    guard let slot = selectedSlot else {
-        print("⚠️ [loadSoldiers] No slot selected")
-        soldiers = []
-        return
-    }
-    
-    print("👥 [loadSoldiers] Selected slot: \(slot.displayName) at column \(slot.columnIndex)")
-    
-    do {
-        let data = try await SheetsService.shared.fetchNamesAndValues(
-            sheet: selectedSheet,
-            columnIndex: slot.columnIndex
-        )
+        print("👥 [loadSoldiers] Loading soldiers...")
         
-        print("👥 [loadSoldiers] Raw data count: \(data.count)")
-        
-        soldiers = data.compactMap { item in
-            guard let color = SoldierColor.from(value: item.value) else {
-                print("   Hiding '\(item.name)' (value: '\(item.value)')")
-                return nil
-            }
-            let lastName = item.name.components(separatedBy: ",").first?.trimmingCharacters(in: .whitespaces) ?? item.name
-            print("   Adding '\(lastName)' with color \(color) (value: '\(item.value)')")
-            return Soldier(name: item.name, lastName: lastName, value: item.value, row: item.row, color: color)
+        guard let slot = selectedSlot else {
+            print("⚠️ [loadSoldiers] No slot selected")
+            soldiers = []
+            return
         }
         
-        print("✅ [loadSoldiers] Final soldier count: \(soldiers.count)")
+        print("👥 [loadSoldiers] Selected slot: \(slot.displayName) at column \(slot.columnIndex)")
         
-        isInputFocused = true
-        
-    } catch {
-        print("❌ [loadSoldiers] Error: \(error)")
-        errorMessage = error.localizedDescription
+        do {
+            let data = try await SheetsService.shared.fetchNamesValuesAndColors(
+                sheet: selectedSheet,
+                columnIndex: slot.columnIndex
+            )
+            
+            print("👥 [loadSoldiers] Raw data count: \(data.count)")
+            
+            soldiers = data.compactMap { item in
+                guard let color = SoldierColor.from(cellColor: item.bgColor, value: item.value) else {
+                    print("   Hiding '\(item.name)' (value: '\(item.value)', bg: \(item.bgColor))")
+                    return nil
+                }
+                let lastName = item.name.components(separatedBy: ",").first?.trimmingCharacters(in: .whitespaces) ?? item.name
+                print("   Adding '\(lastName)' with color \(color)")
+                return Soldier(name: item.name, lastName: lastName, value: item.value, row: item.row, color: color)
+            }
+            
+            print("✅ [loadSoldiers] Final soldier count: \(soldiers.count)")
+            
+            isInputFocused = true
+            
+        } catch {
+            print("❌ [loadSoldiers] Error: \(error)")
+            errorMessage = error.localizedDescription
+        }
     }
-}
     
     // MARK: - Auto-Selection Logic
     

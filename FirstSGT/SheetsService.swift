@@ -11,15 +11,19 @@ actor SheetsService {
     func read(range: String) async throws -> [[String]] {
         let token = try await GoogleAuthService.shared.getAccessToken()
         
-        // Properly encode the range (this will encode slashes as %2F)
-        guard let encodedRange = range.addingPercentEncoding(withAllowedCharacters: CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))) else {
-            throw SheetsError.parseError
+        // Create a character set that does NOT include "/" so slashes get encoded as %2F
+        var allowedCharacters = CharacterSet.urlPathAllowed
+        allowedCharacters.remove("/")
+        
+        guard let encodedRange = range.addingPercentEncoding(withAllowedCharacters: allowedCharacters) else {
+            print("❌ [read] Failed to encode range: \(range)")
+            throw SheetsError.noValidationFound
         }
         
         let urlString = "\(baseURL)/\(spreadsheetId)/values/\(encodedRange)"
         guard let url = URL(string: urlString) else {
             print("❌ [read] Failed to create URL from: \(urlString)")
-            throw SheetsError.parseError
+            throw SheetsError.noValidationFound
         }
         
         print("📖 [read] URL: \(url.absoluteString)")
@@ -49,8 +53,21 @@ actor SheetsService {
     
     func write(range: String, values: [[String]]) async throws {
         let token = try await GoogleAuthService.shared.getAccessToken()
-        let encodedRange = range.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? range
-        let url = URL(string: "\(baseURL)/\(spreadsheetId)/values/\(encodedRange)?valueInputOption=RAW")!
+        
+        // Encode slashes in the range
+        var allowedCharacters = CharacterSet.urlPathAllowed
+        allowedCharacters.remove("/")
+        
+        guard let encodedRange = range.addingPercentEncoding(withAllowedCharacters: allowedCharacters) else {
+            throw SheetsError.noValidationFound
+        }
+        
+        let urlString = "\(baseURL)/\(spreadsheetId)/values/\(encodedRange)?valueInputOption=RAW"
+        guard let url = URL(string: urlString) else {
+            throw SheetsError.noValidationFound
+        }
+        
+        print("✏️ [write] URL: \(url.absoluteString)")
         
         var request = URLRequest(url: url)
         request.httpMethod = "PUT"
@@ -63,11 +80,20 @@ actor SheetsService {
             "values": values
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (_, response) = try await URLSession.shared.data(for: request)
         
-        if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode >= 400 {
-            throw SheetsError.writeFailed
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        if let httpResponse = response as? HTTPURLResponse {
+            print("✏️ [write] HTTP Status: \(httpResponse.statusCode)")
+            if httpResponse.statusCode >= 400 {
+                if let rawString = String(data: data, encoding: .utf8) {
+                    print("❌ [write] Error response: \(rawString)")
+                }
+                throw SheetsError.noValidationFound
+            }
         }
+        
+        print("✅ [write] Success")
     }
     
     // MARK: - New Methods
@@ -208,5 +234,131 @@ actor SheetsService {
             case .noValidationFound: return "No validation found"
             }
         }
+    }
+    /// Fetch names, values, AND background colors for a given column
+    func fetchNamesValuesAndColors(sheet: String, columnIndex: Int) async throws -> [(name: String, value: String, row: Int, bgColor: CellColor)] {
+        let token = try await GoogleAuthService.shared.getAccessToken()
+        
+        // Encode sheet name
+        var allowedCharacters = CharacterSet.urlQueryAllowed
+        allowedCharacters.remove("/")
+        guard let encodedSheet = sheet.addingPercentEncoding(withAllowedCharacters: allowedCharacters) else {
+            throw SheetsError.noValidationFound
+        }
+        
+        let colLetter = columnLetter(for: columnIndex)
+        let range = "\(encodedSheet)!A4:\(colLetter)500"
+        
+        let urlString = "\(baseURL)/\(spreadsheetId)?ranges=\(range)&includeGridData=true"
+        guard let url = URL(string: urlString) else {
+            throw SheetsError.noValidationFound
+        }
+        
+        print("🎨 [fetchColors] URL: \(url.absoluteString)")
+        
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        let (data, _) = try await URLSession.shared.data(for: request)
+        
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        
+        guard let sheets = json?["sheets"] as? [[String: Any]],
+            let firstSheet = sheets.first,
+            let dataArray = firstSheet["data"] as? [[String: Any]],
+            let gridData = dataArray.first,
+            let rowData = gridData["rowData"] as? [[String: Any]]
+        else {
+            print("❌ [fetchColors] Failed to parse grid data")
+            throw SheetsError.noValidationFound
+        }
+        
+        var results: [(name: String, value: String, row: Int, bgColor: CellColor)] = []
+        
+        for (index, row) in rowData.enumerated() {
+            guard let values = row["values"] as? [[String: Any]],
+                !values.isEmpty
+            else { continue }
+            
+            // Column A = name
+            let nameCell = values[0]
+            guard let name = extractCellValue(from: nameCell), !name.isEmpty else { continue }
+            
+            // Stop at "Present"
+            if name.lowercased().contains("present") {
+                break
+            }
+            
+            // Get the value cell (at columnIndex)
+            let valueCell = columnIndex < values.count ? values[columnIndex] : [:]
+            let value = extractCellValue(from: valueCell) ?? "TBD"
+            
+            // Get background color from the value cell
+            let bgColor = extractBackgroundColor(from: valueCell)
+            
+            let actualRow = index + 4
+            
+            print("   Row \(actualRow): '\(name)' = '\(value)' bg=\(bgColor)")
+            
+            results.append((name: name, value: value, row: actualRow, bgColor: bgColor))
+        }
+        
+        return results
+    }
+
+    private func extractCellValue(from cell: [String: Any]) -> String? {
+        if let formatted = cell["formattedValue"] as? String {
+            return formatted
+        }
+        if let effectiveValue = cell["effectiveValue"] as? [String: Any] {
+            if let str = effectiveValue["stringValue"] as? String { return str }
+            if let num = effectiveValue["numberValue"] as? Double { return String(num) }
+        }
+        return nil
+    }
+
+    private func extractBackgroundColor(from cell: [String: Any]) -> CellColor {
+        guard let effectiveFormat = cell["effectiveFormat"] as? [String: Any],
+            let bgColor = effectiveFormat["backgroundColor"] as? [String: Any]
+        else {
+            return .gray
+        }
+        
+        let red = bgColor["red"] as? Double ?? 1.0
+        let green = bgColor["green"] as? Double ?? 1.0
+        let blue = bgColor["blue"] as? Double ?? 1.0
+        
+        print("      RGB: \(red), \(green), \(blue)")
+        
+        // Dark gray (skip these people)
+        if red < 0.4 && green < 0.4 && blue < 0.4 {
+            return .darkGray
+        }
+        
+        // Yellow-ish
+        if red > 0.9 && green > 0.8 && blue < 0.5 {
+            return .yellow
+        }
+        
+        // Purple-ish
+        if red > 0.6 && green < 0.5 && blue > 0.6 {
+            return .purple
+        }
+        
+        // Blue-ish
+        if blue > 0.7 && red < 0.5 && green < 0.8 {
+            return .blue
+        }
+        
+        // Light gray or white = gray
+        return .gray
+    }
+
+    enum CellColor {
+        case gray
+        case yellow
+        case purple
+        case blue
+        case darkGray // skip these
     }
 }
