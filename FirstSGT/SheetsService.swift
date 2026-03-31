@@ -72,10 +72,11 @@ actor SheetsService {
         return try await read(range: range)
     }
     
-    /// Fetch all names (column A, rows 4+) and their values for a given column
+    /// Fetch all names (column A, rows 4+) and values for a given column, stopping at "Total Absent"
     func fetchNamesAndValues(sheet: String, columnIndex: Int) async throws -> [(name: String, value: String, row: Int)] {
         let colLetter = columnLetter(for: columnIndex)
-        let range = "\(sheet)!A4:\(colLetter)1000"
+        let encodedSheet = sheet.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? sheet
+        let range = "\(encodedSheet)!A4:\(colLetter)500"
         let rows = try await read(range: range)
         
         var results: [(name: String, value: String, row: Int)] = []
@@ -84,6 +85,12 @@ actor SheetsService {
             guard !row.isEmpty, !row[0].isEmpty else { continue }
             
             let name = row[0]
+            
+            // Stop scanning when we hit "Total Absent"
+            if name.lowercased().contains("present") {
+                break
+            }
+            
             let value: String
             if columnIndex < row.count {
                 value = row[columnIndex]
@@ -91,7 +98,7 @@ actor SheetsService {
                 value = "TBD"
             }
             
-            let actualRow = index + 4 // Row 4 is the first name row
+            let actualRow = index + 4
             results.append((name: name, value: value, row: actualRow))
         }
         
