@@ -3,13 +3,15 @@ import Foundation
 actor SheetsService {
     static let shared = SheetsService()
     
-    let spreadsheetId = "1ugnpvlLtHRJ2qsiS4VxWjdtU8wSJEXKin1LBQdY_C2I" // from your sheet's URL
+    let spreadsheetId = "1ugnpvlLtHRJ2qsiS4VxWjdtU8wSJEXKin1LBQdY_C2I"
     let baseURL = "https://sheets.googleapis.com/v4/spreadsheets"
-        // MARK: - Read
+    
+    // MARK: - Existing Methods
     
     func read(range: String) async throws -> [[String]] {
         let token = try await GoogleAuthService.shared.getAccessToken()
-        let url = URL(string: "\(baseURL)/\(spreadsheetId)/values/\(range)")!
+        let encodedRange = range.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? range
+        let url = URL(string: "\(baseURL)/\(spreadsheetId)/values/\(encodedRange)")!
         
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -19,11 +21,10 @@ actor SheetsService {
         return response.values ?? []
     }
     
-    // MARK: - Write
-    
     func write(range: String, values: [[String]]) async throws {
         let token = try await GoogleAuthService.shared.getAccessToken()
-        let url = URL(string: "\(baseURL)/\(spreadsheetId)/values/\(range)?valueInputOption=RAW")!
+        let encodedRange = range.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? range
+        let url = URL(string: "\(baseURL)/\(spreadsheetId)/values/\(encodedRange)?valueInputOption=RAW")!
         
         var request = URLRequest(url: url)
         request.httpMethod = "PUT"
@@ -36,68 +37,97 @@ actor SheetsService {
             "values": values
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        try await URLSession.shared.data(for: request)
-    }
-    
-    // MARK: - Append
-    
-    func append(range: String, values: [[String]]) async throws {
-        let token = try await GoogleAuthService.shared.getAccessToken()
-        let url = URL(string: "\(baseURL)/\(spreadsheetId)/values/\(range):append?valueInputOption=RAW")!
+        let (_, response) = try await URLSession.shared.data(for: request)
         
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
-        let body: [String: Any] = [
-            "range": range,
-            "majorDimension": "ROWS",
-            "values": values
-        ]
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        try await URLSession.shared.data(for: request)
+        if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode >= 400 {
+            throw SheetsError.writeFailed
+        }
     }
     
-    struct SheetResponse: Codable {
-        let values: [[String]]?
-    }
-    func fetchDropdownOptions(cell: String) async throws -> [String] {
+    // MARK: - New Methods
+    
+    /// Fetch all sheet tab names from the spreadsheet
+    func fetchSheetNames() async throws -> [String] {
         let token = try await GoogleAuthService.shared.getAccessToken()
-        let url = URL(string: "\(baseURL)/\(spreadsheetId)?ranges=\(cell)&includeGridData=true")!
+        let url = URL(string: "\(baseURL)/\(spreadsheetId)")!
         
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         
         let (data, _) = try await URLSession.shared.data(for: request)
-        
-        // DEBUG - print the raw response so we can see the structure
-        if let rawString = String(data: data, encoding: .utf8) {
-            print("📋 SHEETS RESPONSE: \(rawString)")
-        }
-        
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         
-        guard
-            let sheets = json?["sheets"] as? [[String: Any]],
-            let firstSheet = sheets.first,
-            let gridData = firstSheet["data"] as? [[String: Any]],
-            let firstGrid = gridData.first,
-            let rowData = firstGrid["rowData"] as? [[String: Any]],
-            let firstRow = rowData.first,
-            let values = firstRow["values"] as? [[String: Any]],
-            let firstCell = values.first,
-            let dataValidation = firstCell["dataValidation"] as? [String: Any],
-            let condition = dataValidation["condition"] as? [String: Any],
-            let conditionValues = condition["values"] as? [[String: Any]]
-        else {
-            throw SheetsError.noValidationFound
+        guard let sheets = json?["sheets"] as? [[String: Any]] else {
+            throw SheetsError.parseError
         }
         
-        return conditionValues.compactMap { $0["userEnteredValue"] as? String }
+        return sheets.compactMap { sheet in
+            (sheet["properties"] as? [String: Any])?["title"] as? String
+        }
     }
-
-    enum SheetsError: Error {
+    
+    /// Fetch rows 1-3 of a given sheet to build the column map
+    func fetchHeaderRows(sheet: String) async throws -> [[String]] {
+        let range = "\(sheet)!A1:ZZ3"
+        return try await read(range: range)
+    }
+    
+    /// Fetch all names (column A, rows 4+) and their values for a given column
+    func fetchNamesAndValues(sheet: String, columnIndex: Int) async throws -> [(name: String, value: String, row: Int)] {
+        let colLetter = columnLetter(for: columnIndex)
+        let range = "\(sheet)!A4:\(colLetter)1000"
+        let rows = try await read(range: range)
+        
+        var results: [(name: String, value: String, row: Int)] = []
+        
+        for (index, row) in rows.enumerated() {
+            guard !row.isEmpty, !row[0].isEmpty else { continue }
+            
+            let name = row[0]
+            let value: String
+            if columnIndex < row.count {
+                value = row[columnIndex]
+            } else {
+                value = "TBD"
+            }
+            
+            let actualRow = index + 4 // Row 4 is the first name row
+            results.append((name: name, value: value, row: actualRow))
+        }
+        
+        return results
+    }
+    
+    /// Convert 0-based column index to letter (0=A, 1=B, ..., 26=AA, etc.)
+    func columnLetter(for index: Int) -> String {
+        var result = ""
+        var idx = index
+        
+        while idx >= 0 {
+            result = String(Character(UnicodeScalar(65 + (idx % 26))!)) + result
+            idx = idx / 26 - 1
+        }
+        
+        return result
+    }
+    
+    // MARK: - Types
+    
+    struct SheetResponse: Codable {
+        let values: [[String]]?
+    }
+    
+    enum SheetsError: Error, LocalizedError {
+        case parseError
+        case writeFailed
         case noValidationFound
+        
+        var errorDescription: String? {
+            switch self {
+            case .parseError: return "Failed to parse sheet data"
+            case .writeFailed: return "Failed to write to sheet"
+            case .noValidationFound: return "No validation found"
+            }
+        }
     }
 }
