@@ -6,49 +6,60 @@ struct Soldier: Identifiable, Equatable {
     let id = UUID()
     let name: String
     let lastName: String
+    let searchableNames: [String]  // includes nickname if present
     let value: String
     let row: Int
-    let color: SoldierColor
+    let statusColor: StatusColor
+    let groupColor: SheetsService.GroupColor
     
     static func == (lhs: Soldier, rhs: Soldier) -> Bool {
         lhs.row == rhs.row && lhs.name == rhs.name
     }
 }
 
-enum SoldierColor: Int, Comparable {
-    case gray = 0      // Gray first now
-    case purple = 1
-    case blue = 2
-    case yellow = 3
+enum StatusColor: Int, Comparable {
+    case gray = 0      // TBD - top priority
+    case blue = 1      // E (something)
+    case yellow = 2    // E (t-something)
+    case purple = 3    // ROTC
     
-    static func < (lhs: SoldierColor, rhs: SoldierColor) -> Bool {
+    static func < (lhs: StatusColor, rhs: StatusColor) -> Bool {
         lhs.rawValue < rhs.rawValue
     }
     
     var color: Color {
         switch self {
         case .gray: return Color(.systemGray4)
-        case .purple: return .purple
         case .blue: return .blue
         case .yellow: return .yellow
+        case .purple: return .purple
         }
     }
     
-    static func from(cellColor: SheetsService.CellColor, value: String) -> SoldierColor? {
+    var borderColor: Color {
+        switch self {
+        case .gray: return Color(.systemGray3)
+        case .blue: return .blue
+        case .yellow: return .orange
+        case .purple: return .purple
+        }
+    }
+    
+    static func from(value: String) -> StatusColor? {
         // P = hidden
         if value == "P" { return nil }
         
-        // Dark gray = skip entirely
-        if cellColor == .darkGray { return nil }
+        // ROTC = purple
+        if value == "ROTC" { return .purple }
         
-        // Use the actual cell background color
-        switch cellColor {
-        case .purple: return .purple
-        case .blue: return .blue
-        case .yellow: return .yellow
-        case .gray: return .gray
-        case .darkGray: return nil
-        }
+        // E (t-...) = yellow (check before blue)
+        if value.hasPrefix("E (t-") { return .yellow }
+        
+        // E (...) = blue
+        if value.hasPrefix("E (") { return .blue }
+        
+        // TBD or anything else = gray
+        return .gray
     }
 }
 
@@ -84,6 +95,9 @@ struct ContentView: View {
     @State private var errorMessage: String?
     @State private var toastMessage: String?
     
+    @State private var showUAConfirmation = false
+    @State private var isMarkingUA = false
+    
     var body: some View {
         VStack(spacing: 0) {
             headerView
@@ -116,7 +130,6 @@ struct ContentView: View {
                 nameGridView
             }
             
-            // Visible input field
             inputFieldView
             
             if let toast = toastMessage {
@@ -131,51 +144,80 @@ struct ContentView: View {
         .task {
             await loadData()
         }
+        .confirmationDialog("Mark All as UA?", isPresented: $showUAConfirmation, titleVisibility: .visible) {
+            Button("Mark \(soldiers.count) soldiers as UA", role: .destructive) {
+                Task { await markAllAsUA() }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This will mark all remaining \(soldiers.count) soldiers as Unexcused Absence (UA). This cannot be undone from the app.")
+        }
     }
     
     // MARK: - Header View
     
     private var headerView: some View {
         VStack(spacing: 8) {
-            Button(action: { showSheetPicker = true }) {
-                HStack {
-                    Text("Week: \(selectedSheet)")
-                        .font(.headline)
-                    Image(systemName: "chevron.down")
-                        .font(.caption)
-                }
-                .foregroundColor(.primary)
-            }
-            .confirmationDialog("Select Week", isPresented: $showSheetPicker) {
-                ForEach(allSheetNames, id: \.self) { name in
-                    Button(name) {
-                        selectedSheet = name
-                        Task { await loadSlots() }
+            HStack {
+                Spacer()
+                
+                VStack(spacing: 4) {
+                    Button(action: { showSheetPicker = true }) {
+                        HStack {
+                            Text("Week: \(selectedSheet)")
+                                .font(.headline)
+                            Image(systemName: "chevron.down")
+                                .font(.caption)
+                        }
+                        .foregroundColor(.primary)
                     }
-                }
-            }
-            
-            if !allSlots.isEmpty {
-                Button(action: { showSlotPicker = true }) {
-                    HStack {
-                        Text("Slot: \(selectedSlot?.displayName ?? "None")")
-                            .font(.subheadline)
-                        Image(systemName: "chevron.down")
-                            .font(.caption2)
+                    .confirmationDialog("Select Week", isPresented: $showSheetPicker) {
+                        ForEach(allSheetNames, id: \.self) { name in
+                            Button(name) {
+                                selectedSheet = name
+                                Task { await loadSlots() }
+                            }
+                        }
                     }
-                    .foregroundColor(.secondary)
-                }
-                .confirmationDialog("Select Slot", isPresented: $showSlotPicker) {
-                    ForEach(allSlots) { slot in
-                        Button(slot.displayName) {
-                            selectedSlot = slot
-                            Task { await loadSoldiers() }
+                    
+                    if !allSlots.isEmpty {
+                        Button(action: { showSlotPicker = true }) {
+                            HStack {
+                                Text("Slot: \(selectedSlot?.displayName ?? "None")")
+                                    .font(.subheadline)
+                                Image(systemName: "chevron.down")
+                                    .font(.caption2)
+                            }
+                            .foregroundColor(.secondary)
+                        }
+                        .confirmationDialog("Select Slot", isPresented: $showSlotPicker) {
+                            ForEach(allSlots) { slot in
+                                Button(slot.displayName) {
+                                    selectedSlot = slot
+                                    Task { await loadSoldiers() }
+                                }
+                            }
                         }
                     }
                 }
+                
+                Spacer()
+                
+                // Mark All UA Button
+                Button(action: { showUAConfirmation = true }) {
+                    if isMarkingUA {
+                        ProgressView()
+                            .frame(width: 44, height: 44)
+                    } else {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.title2)
+                            .foregroundColor(.orange)
+                    }
+                }
+                .disabled(soldiers.isEmpty || isMarkingUA)
             }
+            .padding()
         }
-        .padding()
     }
     
     // MARK: - Name Grid View (Flowing Bubbles)
@@ -193,9 +235,15 @@ struct ContentView: View {
     
     private var sortedSoldiers: [Soldier] {
         soldiers.sorted { lhs, rhs in
-            if lhs.color != rhs.color {
-                return lhs.color < rhs.color
+            // 1. Sort by status color (gray first, then blue, yellow, purple)
+            if lhs.statusColor != rhs.statusColor {
+                return lhs.statusColor < rhs.statusColor
             }
+            // 2. Sort by group color (keeps groups together)
+            if lhs.groupColor != rhs.groupColor {
+                return lhs.groupColor < rhs.groupColor
+            }
+            // 3. Alphabetical by last name
             return lhs.lastName.localizedCaseInsensitiveCompare(rhs.lastName) == .orderedAscending
         }
     }
@@ -205,12 +253,12 @@ struct ContentView: View {
             .font(.system(size: 14, weight: .medium))
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            .background(soldier.color.color.opacity(soldier.color == .gray ? 1 : 0.3))
-            .foregroundColor(soldier.color == .gray ? .primary : soldier.color.color == .yellow ? .black : soldier.color.color)
+            .background(soldier.statusColor.color.opacity(soldier.statusColor == .gray ? 1 : 0.3))
+            .foregroundColor(soldier.statusColor == .gray ? .primary : (soldier.statusColor == .yellow ? .black : soldier.statusColor.color))
             .cornerRadius(16)
             .overlay(
                 RoundedRectangle(cornerRadius: 16)
-                    .stroke(soldier.color == .gray ? Color.clear : soldier.color.color, lineWidth: 1.5)
+                    .stroke(soldier.statusColor.borderColor, lineWidth: soldier.statusColor == .gray ? 0 : 1.5)
             )
     }
     
@@ -250,9 +298,9 @@ struct ContentView: View {
             return
         }
         
-        // Try exact match first (case-insensitive)
-        let exactMatches = soldiers.filter {
-            $0.lastName.lowercased() == token.lowercased()
+        // Try exact match first (case-insensitive) against all searchable names
+        let exactMatches = soldiers.filter { soldier in
+            soldier.searchableNames.contains { $0.lowercased() == token.lowercased() }
         }
         
         if exactMatches.count == 1 {
@@ -262,8 +310,8 @@ struct ContentView: View {
         }
         
         // Try prefix match
-        let prefixMatches = soldiers.filter {
-            $0.lastName.lowercased().hasPrefix(token.lowercased())
+        let prefixMatches = soldiers.filter { soldier in
+            soldier.searchableNames.contains { $0.lowercased().hasPrefix(token.lowercased()) }
         }
         
         if prefixMatches.count == 1 {
@@ -273,8 +321,8 @@ struct ContentView: View {
         }
         
         // Try fuzzy match (1 edit distance)
-        let fuzzyMatches = soldiers.filter {
-            levenshteinDistance($0.lastName.lowercased(), token.lowercased()) == 1
+        let fuzzyMatches = soldiers.filter { soldier in
+            soldier.searchableNames.contains { levenshteinDistance($0.lowercased(), token.lowercased()) == 1 }
         }
         
         if fuzzyMatches.count == 1 {
@@ -283,7 +331,7 @@ struct ContentView: View {
             return
         }
         
-        // No match or ambiguous — clear input, show feedback
+        // No match or ambiguous
         if fuzzyMatches.count > 1 {
             showToast("⚠️ Ambiguous: \(fuzzyMatches.map { $0.lastName }.joined(separator: ", "))")
         }
@@ -311,9 +359,9 @@ struct ContentView: View {
                 if s1[i - 1] == s2[j - 1] {
                     dp[i][j] = dp[i - 1][j - 1]
                 } else {
-                    dp[i][j] = min(dp[i - 1][j] + 1,      // deletion
-                                   dp[i][j - 1] + 1,      // insertion
-                                   dp[i - 1][j - 1] + 1)  // substitution
+                    dp[i][j] = min(dp[i - 1][j] + 1,
+                                   dp[i][j - 1] + 1,
+                                   dp[i - 1][j - 1] + 1)
                 }
             }
         }
@@ -341,6 +389,40 @@ struct ContentView: View {
         }
     }
     
+    // MARK: - Mark All UA
+    
+    private func markAllAsUA() async {
+        guard let slot = selectedSlot else { return }
+        
+        isMarkingUA = true
+        let soldiersToMark = soldiers
+        
+        var failedCount = 0
+        
+        for soldier in soldiersToMark {
+            do {
+                let colLetter = await SheetsService.shared.columnLetter(for: slot.columnIndex)
+                let range = "\(selectedSheet)!\(colLetter)\(soldier.row)"
+                try await SheetsService.shared.write(range: range, values: [["UA"]])
+                
+                await MainActor.run {
+                    soldiers.removeAll { $0 == soldier }
+                }
+            } catch {
+                failedCount += 1
+            }
+        }
+        
+        await MainActor.run {
+            isMarkingUA = false
+            if failedCount == 0 {
+                showToast("✅ Marked \(soldiersToMark.count) as UA")
+            } else {
+                showToast("⚠️ \(failedCount) failed to mark")
+            }
+        }
+    }
+    
     private func showToast(_ message: String) {
         toastMessage = message
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
@@ -353,29 +435,22 @@ struct ContentView: View {
     // MARK: - Data Loading
     
     private func loadData() async {
-        print("🚀 [loadData] Starting...")
         isLoading = true
         errorMessage = nil
         
         do {
-            print("📥 [loadData] Fetching sheet names...")
             allSheetNames = try await SheetsService.shared.fetchSheetNames()
                 .filter { $0.contains("-") && $0.contains("/") }
             
-            print("✅ [loadData] Filtered sheets: \(allSheetNames)")
-            
             selectedSheet = autoSelectSheet() ?? allSheetNames.first ?? ""
-            print("✅ [loadData] Auto-selected sheet: '\(selectedSheet)'")
             
             guard !selectedSheet.isEmpty else {
-                print("❌ [loadData] No sheets found")
                 throw NSError(domain: "", code: 0, userInfo: [NSLocalizedDescriptionKey: "No sheets found"])
             }
             
             await loadSlots()
             
         } catch {
-            print("❌ [loadData] Error: \(error)")
             errorMessage = error.localizedDescription
         }
         
@@ -383,52 +458,30 @@ struct ContentView: View {
     }
     
     private func loadSlots() async {
-        print("🎰 [loadSlots] Loading slots for sheet: '\(selectedSheet)'")
         errorMessage = nil
         
         do {
             let headers = try await SheetsService.shared.fetchHeaderRows(sheet: selectedSheet)
             
-            print("🎰 [loadSlots] Got \(headers.count) header rows")
-            
             let row2 = headers.count > 1 ? headers[1] : []
             let row3 = headers.count > 2 ? headers[2] : []
             
-            print("🎰 [loadSlots] Row 2 (days): \(row2.prefix(20))")
-            print("🎰 [loadSlots] Row 3 (slots): \(row3.prefix(20))")
-            
             allSlots = buildColumnMap(dayRow: row2, slotRow: row3)
-            print("✅ [loadSlots] Built \(allSlots.count) total slots")
-            
             todaySlots = filterTodaySlots()
-            print("✅ [loadSlots] Filtered to \(todaySlots.count) today's slots: \(todaySlots.map { $0.displayName })")
-            
             selectedSlot = autoSelectSlot()
-            print("✅ [loadSlots] Auto-selected slot: \(selectedSlot?.displayName ?? "none")")
             
             await loadSoldiers()
             
         } catch {
-            print("❌ [loadSlots] Error: \(error)")
-            print("❌ [loadSlots] Error details: \(error.localizedDescription)")
-            if let nsError = error as NSError? {
-                print("❌ [loadSlots] Domain: \(nsError.domain), Code: \(nsError.code)")
-                print("❌ [loadSlots] UserInfo: \(nsError.userInfo)")
-            }
             errorMessage = error.localizedDescription
         }
     }
     
     private func loadSoldiers() async {
-        print("👥 [loadSoldiers] Loading soldiers...")
-        
         guard let slot = selectedSlot else {
-            print("⚠️ [loadSoldiers] No slot selected")
             soldiers = []
             return
         }
-        
-        print("👥 [loadSoldiers] Selected slot: \(slot.displayName) at column \(slot.columnIndex)")
         
         do {
             let data = try await SheetsService.shared.fetchNamesValuesAndColors(
@@ -436,24 +489,42 @@ struct ContentView: View {
                 columnIndex: slot.columnIndex
             )
             
-            print("👥 [loadSoldiers] Raw data count: \(data.count)")
-            
             soldiers = data.compactMap { item in
-                guard let color = SoldierColor.from(cellColor: item.bgColor, value: item.value) else {
-                    print("   Hiding '\(item.name)' (value: '\(item.value)', bg: \(item.bgColor))")
-                    return nil
+                guard let statusColor = StatusColor.from(value: item.value) else {
+                    return nil // P = hidden
                 }
-                let lastName = item.name.components(separatedBy: ",").first?.trimmingCharacters(in: .whitespaces) ?? item.name
-                print("   Adding '\(lastName)' with color \(color)")
-                return Soldier(name: item.name, lastName: lastName, value: item.value, row: item.row, color: color)
+                
+                // Parse name and nickname
+                let fullName = item.name
+                let lastName = fullName.components(separatedBy: ",").first?.trimmingCharacters(in: .whitespaces) ?? fullName
+                
+                // Handle nickname with slash: "LastName/Nickname"
+                var searchableNames: [String] = []
+                let nameParts = lastName.components(separatedBy: "/")
+                for part in nameParts {
+                    let trimmed = part.trimmingCharacters(in: .whitespaces)
+                    if !trimmed.isEmpty {
+                        searchableNames.append(trimmed)
+                    }
+                }
+                
+                // Use first part as display name
+                let displayName = searchableNames.first ?? lastName
+                
+                return Soldier(
+                    name: fullName,
+                    lastName: displayName,
+                    searchableNames: searchableNames,
+                    value: item.value,
+                    row: item.row,
+                    statusColor: statusColor,
+                    groupColor: item.groupColor
+                )
             }
-            
-            print("✅ [loadSoldiers] Final soldier count: \(soldiers.count)")
             
             isInputFocused = true
             
         } catch {
-            print("❌ [loadSoldiers] Error: \(error)")
             errorMessage = error.localizedDescription
         }
     }
@@ -618,7 +689,6 @@ struct FlowLayout: Layout {
         for subview in subviews {
             let size = subview.sizeThatFits(.unspecified)
             
-            // Check if we need to wrap to next line
             if currentX + size.width > maxWidth && currentX > 0 {
                 currentX = 0
                 currentY += lineHeight + spacing
@@ -637,8 +707,6 @@ struct FlowLayout: Layout {
         return (CGSize(width: totalWidth, height: totalHeight), positions)
     }
 }
-
-// MARK: - Preview
 
 #Preview {
     ContentView()
