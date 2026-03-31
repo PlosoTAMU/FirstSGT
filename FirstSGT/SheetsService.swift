@@ -10,8 +10,17 @@ actor SheetsService {
     
     func read(range: String) async throws -> [[String]] {
         let token = try await GoogleAuthService.shared.getAccessToken()
-        let encodedRange = range.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? range
-        let url = URL(string: "\(baseURL)/\(spreadsheetId)/values/\(encodedRange)")!
+        
+        // Properly encode the range (this will encode slashes as %2F)
+        guard let encodedRange = range.addingPercentEncoding(withAllowedCharacters: CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))) else {
+            throw SheetsError.parseError
+        }
+        
+        let urlString = "\(baseURL)/\(spreadsheetId)/values/\(encodedRange)"
+        guard let url = URL(string: urlString) else {
+            print("❌ [read] Failed to create URL from: \(urlString)")
+            throw SheetsError.parseError
+        }
         
         print("📖 [read] URL: \(url.absoluteString)")
         
@@ -101,10 +110,7 @@ actor SheetsService {
     func fetchHeaderRows(sheet: String) async throws -> [[String]] {
         print("🟡 [fetchHeaderRows] Fetching headers for sheet: '\(sheet)'")
         
-        let encodedSheet = sheet.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? sheet
-        print("🟡 [fetchHeaderRows] Encoded sheet name: '\(encodedSheet)'")
-        
-        let range = "\(encodedSheet)!A1:ZZ3"
+        let range = "\(sheet)!A1:ZZ3"
         print("🟡 [fetchHeaderRows] Full range: '\(range)'")
         
         do {
@@ -119,16 +125,14 @@ actor SheetsService {
             throw error
         }
     }
-
     /// Fetch all names (column A, rows 4+) and values for a given column, stopping at "Present"
     func fetchNamesAndValues(sheet: String, columnIndex: Int) async throws -> [(name: String, value: String, row: Int)] {
         print("🟢 [fetchNamesAndValues] Sheet: '\(sheet)', Column: \(columnIndex)")
-        
+    
         let colLetter = columnLetter(for: columnIndex)
         print("🟢 [fetchNamesAndValues] Column letter: \(colLetter)")
         
-        let encodedSheet = sheet.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? sheet
-        let range = "\(encodedSheet)!A4:\(colLetter)500"
+        let range = "\(sheet)!A4:\(colLetter)500"
         print("🟢 [fetchNamesAndValues] Range: '\(range)'")
         
         do {
