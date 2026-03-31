@@ -10,15 +10,32 @@ actor SheetsService {
     
     func read(range: String) async throws -> [[String]] {
         let token = try await GoogleAuthService.shared.getAccessToken()
-        let encodedRange = range.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? range
+        let encodedRange = range.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? range
         let url = URL(string: "\(baseURL)/\(spreadsheetId)/values/\(encodedRange)")!
+        
+        print("📖 [read] URL: \(url.absoluteString)")
         
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         
-        let (data, _) = try await URLSession.shared.data(for: request)
-        let response = try JSONDecoder().decode(SheetResponse.self, from: data)
-        return response.values ?? []
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        if let httpResponse = response as? HTTPURLResponse {
+            print("📖 [read] HTTP Status: \(httpResponse.statusCode)")
+        }
+        
+        if let rawString = String(data: data, encoding: .utf8) {
+            print("📖 [read] Raw response: \(rawString.prefix(500))...")
+        }
+        
+        do {
+            let decoded = try JSONDecoder().decode(SheetResponse.self, from: data)
+            print("✅ [read] Decoded \(decoded.values?.count ?? 0) rows")
+            return decoded.values ?? []
+        } catch {
+            print("❌ [read] Decode error: \(error)")
+            throw error
+        }
     }
     
     func write(range: String, values: [[String]]) async throws {
@@ -55,54 +72,105 @@ actor SheetsService {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         
         let (data, _) = try await URLSession.shared.data(for: request)
+        
+        // DEBUG: Print raw response
+        if let rawString = String(data: data, encoding: .utf8) {
+            print("🔵 [fetchSheetNames] Raw response:")
+            print(rawString)
+        }
+        
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         
+        print("🔵 [fetchSheetNames] JSON keys: \(json?.keys.joined(separator: ", ") ?? "none")")
+        
         guard let sheets = json?["sheets"] as? [[String: Any]] else {
-            throw SheetsError.parseError
+            print("❌ [fetchSheetNames] Failed to parse 'sheets' array")
+            throw SheetsError.noValidationFound
         }
         
-        return sheets.compactMap { sheet in
+        let sheetNames = sheets.compactMap { sheet in
             (sheet["properties"] as? [String: Any])?["title"] as? String
         }
+        
+        print("✅ [fetchSheetNames] Found sheets: \(sheetNames)")
+        
+        return sheetNames
     }
-    
+
     /// Fetch rows 1-3 of a given sheet to build the column map
     func fetchHeaderRows(sheet: String) async throws -> [[String]] {
-        let range = "\(sheet)!A1:ZZ3"
-        return try await read(range: range)
+        print("🟡 [fetchHeaderRows] Fetching headers for sheet: '\(sheet)'")
+        
+        let encodedSheet = sheet.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? sheet
+        print("🟡 [fetchHeaderRows] Encoded sheet name: '\(encodedSheet)'")
+        
+        let range = "\(encodedSheet)!A1:ZZ3"
+        print("🟡 [fetchHeaderRows] Full range: '\(range)'")
+        
+        do {
+            let result = try await read(range: range)
+            print("✅ [fetchHeaderRows] Got \(result.count) rows")
+            for (idx, row) in result.enumerated() {
+                print("   Row \(idx + 1): \(row.count) columns - \(row.prefix(10))")
+            }
+            return result
+        } catch {
+            print("❌ [fetchHeaderRows] Error: \(error)")
+            throw error
+        }
     }
-    
-    /// Fetch all names (column A, rows 4+) and values for a given column, stopping at "Total Absent"
+
+    /// Fetch all names (column A, rows 4+) and values for a given column, stopping at "Present"
     func fetchNamesAndValues(sheet: String, columnIndex: Int) async throws -> [(name: String, value: String, row: Int)] {
+        print("🟢 [fetchNamesAndValues] Sheet: '\(sheet)', Column: \(columnIndex)")
+        
         let colLetter = columnLetter(for: columnIndex)
+        print("🟢 [fetchNamesAndValues] Column letter: \(colLetter)")
+        
         let encodedSheet = sheet.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? sheet
         let range = "\(encodedSheet)!A4:\(colLetter)500"
-        let rows = try await read(range: range)
+        print("🟢 [fetchNamesAndValues] Range: '\(range)'")
         
-        var results: [(name: String, value: String, row: Int)] = []
-        
-        for (index, row) in rows.enumerated() {
-            guard !row.isEmpty, !row[0].isEmpty else { continue }
+        do {
+            let rows = try await read(range: range)
+            print("✅ [fetchNamesAndValues] Got \(rows.count) rows")
             
-            let name = row[0]
+            var results: [(name: String, value: String, row: Int)] = []
             
-            // Stop scanning when we hit "Total Absent"
-            if name.lowercased().contains("present") {
-                break
+            for (index, row) in rows.enumerated() {
+                guard !row.isEmpty, !row[0].isEmpty else {
+                    print("   Row \(index + 4): Empty, skipping")
+                    continue
+                }
+                
+                let name = row[0]
+                
+                // Stop scanning when we hit "Present"
+                if name.lowercased().contains("present") {
+                    print("   Row \(index + 4): Found 'Present', stopping scan")
+                    break
+                }
+                
+                let value: String
+                if columnIndex < row.count {
+                    value = row[columnIndex]
+                } else {
+                    value = "TBD"
+                }
+                
+                let actualRow = index + 4
+                results.append((name: name, value: value, row: actualRow))
+                
+                print("   Row \(actualRow): '\(name)' = '\(value)'")
             }
             
-            let value: String
-            if columnIndex < row.count {
-                value = row[columnIndex]
-            } else {
-                value = "TBD"
-            }
+            print("✅ [fetchNamesAndValues] Returning \(results.count) soldiers")
+            return results
             
-            let actualRow = index + 4
-            results.append((name: name, value: value, row: actualRow))
+        } catch {
+            print("❌ [fetchNamesAndValues] Error: \(error)")
+            throw error
         }
-        
-        return results
     }
     
     /// Convert 0-based column index to letter (0=A, 1=B, ..., 26=AA, etc.)

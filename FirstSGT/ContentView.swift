@@ -344,22 +344,29 @@ struct ContentView: View {
     // MARK: - Data Loading
     
     private func loadData() async {
+        print("🚀 [loadData] Starting...")
         isLoading = true
         errorMessage = nil
         
         do {
+            print("📥 [loadData] Fetching sheet names...")
             allSheetNames = try await SheetsService.shared.fetchSheetNames()
                 .filter { $0.contains("-") && $0.contains("/") }
             
+            print("✅ [loadData] Filtered sheets: \(allSheetNames)")
+            
             selectedSheet = autoSelectSheet() ?? allSheetNames.first ?? ""
+            print("✅ [loadData] Auto-selected sheet: '\(selectedSheet)'")
             
             guard !selectedSheet.isEmpty else {
+                print("❌ [loadData] No sheets found")
                 throw NSError(domain: "", code: 0, userInfo: [NSLocalizedDescriptionKey: "No sheets found"])
             }
             
             await loadSlots()
             
         } catch {
+            print("❌ [loadData] Error: \(error)")
             errorMessage = error.localizedDescription
         }
         
@@ -367,51 +374,80 @@ struct ContentView: View {
     }
     
     private func loadSlots() async {
+        print("🎰 [loadSlots] Loading slots for sheet: '\(selectedSheet)'")
         errorMessage = nil
         
         do {
             let headers = try await SheetsService.shared.fetchHeaderRows(sheet: selectedSheet)
             
+            print("🎰 [loadSlots] Got \(headers.count) header rows")
+            
             let row2 = headers.count > 1 ? headers[1] : []
             let row3 = headers.count > 2 ? headers[2] : []
             
+            print("🎰 [loadSlots] Row 2 (days): \(row2.prefix(20))")
+            print("🎰 [loadSlots] Row 3 (slots): \(row3.prefix(20))")
+            
             allSlots = buildColumnMap(dayRow: row2, slotRow: row3)
+            print("✅ [loadSlots] Built \(allSlots.count) total slots")
+            
             todaySlots = filterTodaySlots()
+            print("✅ [loadSlots] Filtered to \(todaySlots.count) today's slots: \(todaySlots.map { $0.displayName })")
+            
             selectedSlot = autoSelectSlot()
+            print("✅ [loadSlots] Auto-selected slot: \(selectedSlot?.displayName ?? "none")")
             
             await loadSoldiers()
             
         } catch {
+            print("❌ [loadSlots] Error: \(error)")
+            print("❌ [loadSlots] Error details: \(error.localizedDescription)")
+            if let nsError = error as NSError? {
+                print("❌ [loadSlots] Domain: \(nsError.domain), Code: \(nsError.code)")
+                print("❌ [loadSlots] UserInfo: \(nsError.userInfo)")
+            }
             errorMessage = error.localizedDescription
         }
     }
     
     private func loadSoldiers() async {
-        guard let slot = selectedSlot else {
-            soldiers = []
-            return
+    print("👥 [loadSoldiers] Loading soldiers...")
+    
+    guard let slot = selectedSlot else {
+        print("⚠️ [loadSoldiers] No slot selected")
+        soldiers = []
+        return
+    }
+    
+    print("👥 [loadSoldiers] Selected slot: \(slot.displayName) at column \(slot.columnIndex)")
+    
+    do {
+        let data = try await SheetsService.shared.fetchNamesAndValues(
+            sheet: selectedSheet,
+            columnIndex: slot.columnIndex
+        )
+        
+        print("👥 [loadSoldiers] Raw data count: \(data.count)")
+        
+        soldiers = data.compactMap { item in
+            guard let color = SoldierColor.from(value: item.value) else {
+                print("   Hiding '\(item.name)' (value: '\(item.value)')")
+                return nil
+            }
+            let lastName = item.name.components(separatedBy: ",").first?.trimmingCharacters(in: .whitespaces) ?? item.name
+            print("   Adding '\(lastName)' with color \(color) (value: '\(item.value)')")
+            return Soldier(name: item.name, lastName: lastName, value: item.value, row: item.row, color: color)
         }
         
-        do {
-            let data = try await SheetsService.shared.fetchNamesAndValues(
-                sheet: selectedSheet,
-                columnIndex: slot.columnIndex
-            )
-            
-            soldiers = data.compactMap { item in
-                guard let color = SoldierColor.from(value: item.value) else {
-                    return nil
-                }
-                let lastName = item.name.components(separatedBy: ",").first?.trimmingCharacters(in: .whitespaces) ?? item.name
-                return Soldier(name: item.name, lastName: lastName, value: item.value, row: item.row, color: color)
-            }
-            
-            isInputFocused = true
-            
-        } catch {
-            errorMessage = error.localizedDescription
-        }
+        print("✅ [loadSoldiers] Final soldier count: \(soldiers.count)")
+        
+        isInputFocused = true
+        
+    } catch {
+        print("❌ [loadSoldiers] Error: \(error)")
+        errorMessage = error.localizedDescription
     }
+}
     
     // MARK: - Auto-Selection Logic
     
