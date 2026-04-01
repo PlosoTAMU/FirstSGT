@@ -46,19 +46,21 @@ enum StatusColor: Int, Comparable {
     }
     
     static func from(value: String) -> StatusColor? {
-        // P = hidden
-        if value == "P" { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespaces)
         
-        // ROTC = purple
-        if value == "ROTC" { return .purple }
+        if trimmed == "P" || trimmed == "UA" { return nil }
+        if trimmed == "ROTC" { return .purple }
         
-        // E (t-...) = yellow (check before blue)
-        if value.hasPrefix("E (t-") { return .yellow }
+        let lower = trimmed.lowercased()
+        // Yellow: E (t-...) or E (Tut...)
+        if lower.hasPrefix("e (t-") || lower.hasPrefix("e (tut") {
+            return .yellow
+        }
+        // Blue: All other E (...)
+        if lower.hasPrefix("e (") {
+            return .blue
+        }
         
-        // E (...) = blue
-        if value.hasPrefix("E (") { return .blue }
-        
-        // TBD or anything else = gray
         return .gray
     }
 }
@@ -149,8 +151,11 @@ struct ContentView: View {
                 Task { await markAllAsUA() }
             }
             Button("Cancel", role: .cancel) { }
+        }
+        .alert("New Sheet Created", isPresented: $showSheetCreatedAlert) {
+            Button("OK") { }
         } message: {
-            Text("This will mark all remaining \(soldiers.count) soldiers as Unexcused Absence (UA). This cannot be undone from the app.")
+            Text("Created sheet: \(createdSheetName)")
         }
     }
     
@@ -372,6 +377,9 @@ struct ContentView: View {
     private func markPresent(_ soldier: Soldier) {
         guard let slot = selectedSlot else { return }
         
+        // Save for undo
+        undoStack.append(.markPresent(soldier: soldier, previousValue: soldier.value))
+        
         soldiers.removeAll { $0 == soldier }
         showToast("✅ Marked \(soldier.lastName) present")
         
@@ -381,10 +389,9 @@ struct ContentView: View {
                 let range = "\(selectedSheet)!\(colLetter)\(soldier.row)"
                 try await SheetsService.shared.write(range: range, values: [["P"]])
             } catch {
-                await MainActor.run {
-                    soldiers.append(soldier)
-                    showToast("❌ Failed to mark \(soldier.lastName)")
-                }
+                undoStack.removeLast()
+                soldiers.append(soldier)
+                showToast("❌ Failed to mark \(soldier.lastName)")
             }
         }
     }
@@ -393,34 +400,27 @@ struct ContentView: View {
     
     private func markAllAsUA() async {
         guard let slot = selectedSlot else { return }
-        
         isMarkingUA = true
-        let soldiersToMark = soldiers
         
-        var failedCount = 0
+        let soldiersToMark = soldiers
+        let previousValues = soldiersToMark.map { $0.value }
+        
+        // Save for undo
+        undoStack.append(.markAllUA(soldiers: soldiersToMark, previousValues: previousValues))
         
         for soldier in soldiersToMark {
             do {
                 let colLetter = await SheetsService.shared.columnLetter(for: slot.columnIndex)
                 let range = "\(selectedSheet)!\(colLetter)\(soldier.row)"
                 try await SheetsService.shared.write(range: range, values: [["UA"]])
-                
-                await MainActor.run {
-                    soldiers.removeAll { $0 == soldier }
-                }
+                await MainActor.run { soldiers.removeAll { $0 == soldier } }
             } catch {
-                failedCount += 1
+                // Continue with others
             }
         }
         
-        await MainActor.run {
-            isMarkingUA = false
-            if failedCount == 0 {
-                showToast("✅ Marked \(soldiersToMark.count) as UA")
-            } else {
-                showToast("⚠️ \(failedCount) failed to mark")
-            }
-        }
+        isMarkingUA = false
+        showToast("✅ Marked \(soldiersToMark.count) as UA")
     }
     
     private func showToast(_ message: String) {
@@ -439,17 +439,36 @@ struct ContentView: View {
         errorMessage = nil
         
         do {
-            allSheetNames = try await SheetsService.shared.fetchSheetNames()
+            sheetsWithIds = try await SheetsService.shared.fetchSheetNamesWithIds()
+            allSheetNames = sheetsWithIds
+                .map { $0.name }
                 .filter { $0.contains("-") && $0.contains("/") }
             
-            selectedSheet = autoSelectSheet() ?? allSheetNames.first ?? ""
+            let (selected, needsCreation) = autoSelectSheetOrCreate()
+            
+            if needsCreation, let templateId = findTemplateSheetId() {
+                let newSheetName = generateNewSheetName()
+                try await SheetsService.shared.copySheet(
+                    sourceSheetId: templateId,
+                    newTitle: newSheetName,
+                    insertAtIndex: 1
+                )
+                createdSheetName = newSheetName
+                showSheetCreatedAlert = true
+                
+                // Refresh sheet list
+                sheetsWithIds = try await SheetsService.shared.fetchSheetNamesWithIds()
+                allSheetNames = sheetsWithIds.map { $0.name }.filter { $0.contains("-") && $0.contains("/") }
+                selectedSheet = newSheetName
+            } else {
+                selectedSheet = selected ?? allSheetNames.first ?? ""
+            }
             
             guard !selectedSheet.isEmpty else {
                 throw NSError(domain: "", code: 0, userInfo: [NSLocalizedDescriptionKey: "No sheets found"])
             }
             
             await loadSlots()
-            
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -600,6 +619,55 @@ struct ContentView: View {
         
         return slots
     }
+
+    private func autoSelectSheetOrCreate() -> (String?, Bool) {
+        let today = Date()
+        let calendar = Calendar.current
+        let weekday = calendar.component(.weekday, from: today)
+        
+        for sheetName in allSheetNames {
+            guard let (startDate, endDate) = parseDateRange(sheetName) else { continue }
+            
+            switch weekday {
+            case 1: // Sunday
+                if calendar.isDate(startDate, inSameDayAs: today) { return (sheetName, false) }
+            case 7: // Saturday
+                if let tomorrow = calendar.date(byAdding: .day, value: 1, to: today),
+                calendar.isDate(startDate, inSameDayAs: tomorrow) { return (sheetName, false) }
+            default:
+                if today >= startDate && today <= endDate { return (sheetName, false) }
+            }
+        }
+        
+        // No sheet found for today — need to create one
+        return (nil, true)
+    }
+
+    private func findTemplateSheetId() -> Int? {
+        // Use the most recent week sheet as template
+        if let mostRecent = allSheetNames.first,
+        let match = sheetsWithIds.first(where: { $0.name == mostRecent }) {
+            return match.sheetId
+        }
+        return nil
+    }
+
+    private func generateNewSheetName() -> String {
+        let calendar = Calendar.current
+        let today = Date()
+        let weekday = calendar.component(.weekday, from: today)
+        
+        // Find the Sunday of this week
+        let daysToSubtract = weekday == 1 ? 0 : weekday - 1
+        guard let sunday = calendar.date(byAdding: .day, value: -daysToSubtract, to: today),
+            let friday = calendar.date(byAdding: .day, value: 5, to: sunday)
+        else { return "" }
+        
+        let formatter = DateFormatter()
+        formatter.dateFormat = "M/d"
+        
+        return "\(formatter.string(from: sunday))-\(formatter.string(from: friday))"
+    }
     
     private func filterTodaySlots() -> [ColumnSlot] {
         let calendar = Calendar.current
@@ -651,6 +719,98 @@ struct ContentView: View {
         }
         
         return todaySlots.first
+    }
+    private var headerView: some View {
+        HStack {
+            // Undo button (left)
+            Button(action: { Task { await performUndo() } }) {
+                Image(systemName: "arrow.uturn.backward.circle.fill")
+                    .font(.title2)
+                    .foregroundColor(undoStack.isEmpty ? .gray : .blue)
+            }
+            .disabled(undoStack.isEmpty || isUndoing)
+            
+            Spacer()
+            
+            VStack(spacing: 4) {
+                // Sheet picker
+                Button(action: { showSheetPicker = true }) {
+                    HStack {
+                        Text("Week: \(selectedSheet)")
+                            .font(.headline)
+                        Image(systemName: "chevron.down").font(.caption)
+                    }
+                }
+                .confirmationDialog("Select Week", isPresented: $showSheetPicker) {
+                    ForEach(allSheetNames, id: \.self) { name in
+                        Button(name) {
+                            selectedSheet = name
+                            Task { await loadSlots() }
+                        }
+                    }
+                }
+                
+                // Slot picker
+                if !allSlots.isEmpty {
+                    Button(action: { showSlotPicker = true }) {
+                        HStack {
+                            Text("Slot: \(selectedSlot?.displayName ?? "None")")
+                                .font(.subheadline)
+                            Image(systemName: "chevron.down").font(.caption2)
+                        }
+                        .foregroundColor(.secondary)
+                    }
+                    .confirmationDialog("Select Slot", isPresented: $showSlotPicker) {
+                        ForEach(allSlots) { slot in
+                            Button(slot.displayName) {
+                                selectedSlot = slot
+                                Task { await loadSoldiers() }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            Spacer()
+            
+            // Mark All UA button (right)
+            Button(action: { showUAConfirmation = true }) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.title2)
+                    .foregroundColor(.orange)
+            }
+            .disabled(soldiers.isEmpty || isMarkingUA)
+        }
+        .padding()
+    }
+    private func performUndo() async {
+        guard let lastAction = undoStack.popLast(), let slot = selectedSlot else { return }
+        isUndoing = true
+        
+        do {
+            switch lastAction {
+            case .markPresent(let soldier, let previousValue):
+                let colLetter = await SheetsService.shared.columnLetter(for: slot.columnIndex)
+                let range = "\(selectedSheet)!\(colLetter)\(soldier.row)"
+                try await SheetsService.shared.write(range: range, values: [[previousValue]])
+                soldiers.append(soldier)
+                showToast("↩️ Restored \(soldier.lastName)")
+                
+            case .markAllUA(let soldierList, let previousValues):
+                for (index, soldier) in soldierList.enumerated() {
+                    let colLetter = await SheetsService.shared.columnLetter(for: slot.columnIndex)
+                    let range = "\(selectedSheet)!\(colLetter)\(soldier.row)"
+                    let prevValue = index < previousValues.count ? previousValues[index] : "TBD"
+                    try await SheetsService.shared.write(range: range, values: [[prevValue]])
+                    soldiers.append(soldier)
+                }
+                showToast("↩️ Restored \(soldierList.count) soldiers")
+            }
+        } catch {
+            showToast("❌ Undo failed")
+        }
+        
+        isUndoing = false
     }
 }
 

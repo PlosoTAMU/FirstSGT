@@ -23,8 +23,6 @@ actor SheetsService {
             throw SheetsError.parseError
         }
         
-        print("📖 [read] URL: \(url.absoluteString)")
-        
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         
@@ -50,8 +48,6 @@ actor SheetsService {
             throw SheetsError.parseError
         }
         
-        print("✏️ [write] URL: \(url.absoluteString)")
-        
         var request = URLRequest(url: url)
         request.httpMethod = "PUT"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -66,20 +62,17 @@ actor SheetsService {
         
         let (data, response) = try await URLSession.shared.data(for: request)
         
-        if let httpResponse = response as? HTTPURLResponse {
-            print("✏️ [write] HTTP Status: \(httpResponse.statusCode)")
-            if httpResponse.statusCode >= 400 {
-                if let rawString = String(data: data, encoding: .utf8) {
-                    print("❌ [write] Error response: \(rawString)")
-                }
-                throw SheetsError.writeFailed
+        if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode >= 400 {
+            if let rawString = String(data: data, encoding: .utf8) {
+                print("❌ [write] Error response: \(rawString)")
             }
+            throw SheetsError.writeFailed
         }
     }
     
-    // MARK: - Fetch Sheet Names
+    // MARK: - Fetch Sheet Names with IDs
     
-    func fetchSheetNames() async throws -> [String] {
+    func fetchSheetNamesWithIds() async throws -> [(name: String, sheetId: Int)] {
         let token = try await GoogleAuthService.shared.getAccessToken()
         let url = URL(string: "\(baseURL)/\(spreadsheetId)")!
         
@@ -94,8 +87,58 @@ actor SheetsService {
         }
         
         return sheets.compactMap { sheet in
-            (sheet["properties"] as? [String: Any])?["title"] as? String
+            guard let props = sheet["properties"] as? [String: Any],
+                  let title = props["title"] as? String,
+                  let sheetId = props["sheetId"] as? Int
+            else { return nil }
+            return (name: title, sheetId: sheetId)
         }
+    }
+    
+    func fetchSheetNames() async throws -> [String] {
+        let sheetsWithIds = try await fetchSheetNamesWithIds()
+        return sheetsWithIds.map { $0.name }
+    }
+    
+    // MARK: - Copy Sheet (Create New Week)
+    
+    func copySheet(sourceSheetId: Int, newTitle: String, insertAtIndex: Int) async throws {
+        let token = try await GoogleAuthService.shared.getAccessToken()
+        let url = URL(string: "\(baseURL)/\(spreadsheetId):batchUpdate")!
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        // Step 1: Duplicate the sheet
+        let duplicateRequest: [String: Any] = [
+            "requests": [
+                [
+                    "duplicateSheet": [
+                        "sourceSheetId": sourceSheetId,
+                        "insertSheetIndex": insertAtIndex,
+                        "newSheetName": newTitle
+                    ]
+                ]
+            ]
+        ]
+        
+        request.httpBody = try JSONSerialization.data(withJSONObject: duplicateRequest)
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        if let httpResponse = response as? HTTPURLResponse {
+            print("📋 [copySheet] HTTP Status: \(httpResponse.statusCode)")
+            if httpResponse.statusCode >= 400 {
+                if let rawString = String(data: data, encoding: .utf8) {
+                    print("❌ [copySheet] Error: \(rawString)")
+                }
+                throw SheetsError.writeFailed
+            }
+        }
+        
+        print("✅ [copySheet] Created new sheet: \(newTitle)")
     }
     
     // MARK: - Fetch Header Rows
@@ -124,8 +167,6 @@ actor SheetsService {
             throw SheetsError.parseError
         }
         
-        print("🎨 [fetchColors] URL: \(url.absoluteString)")
-        
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         
@@ -139,7 +180,6 @@ actor SheetsService {
               let gridData = dataArray.first,
               let rowData = gridData["rowData"] as? [[String: Any]]
         else {
-            print("❌ [fetchColors] Failed to parse grid data")
             throw SheetsError.parseError
         }
         
@@ -150,24 +190,19 @@ actor SheetsService {
                   !values.isEmpty
             else { continue }
             
-            // Column A = name cell
             let nameCell = values[0]
             guard let name = extractCellValue(from: nameCell), !name.isEmpty else { continue }
             
-            // Stop at "Present"
             if name.lowercased().contains("present") {
                 break
             }
             
-            // Get GROUP color from the NAME cell (column A) background
             let groupColor = extractGroupColor(from: nameCell)
             
-            // Skip dark gray background people
             if groupColor == .hidden {
                 continue
             }
             
-            // Get the VALUE cell (at columnIndex)
             let valueCell = columnIndex < values.count ? values[columnIndex] : [:]
             let value = extractCellValue(from: valueCell) ?? "TBD"
             
@@ -203,39 +238,25 @@ actor SheetsService {
         let green = bgColor["green"] as? Double ?? 1.0
         let blue = bgColor["blue"] as? Double ?? 1.0
         
-        print("      Name cell RGB: \(red), \(green), \(blue)")
-        
-        // Dark gray = hidden (skip these people entirely)
         if red < 0.5 && green < 0.5 && blue < 0.5 {
             return .hidden
         }
-        
-        // Yellow-ish background
         if red > 0.9 && green > 0.8 && blue < 0.6 {
             return .yellowGroup
         }
-        
-        // Blue-ish background
         if blue > 0.7 && red < 0.7 {
             return .blueGroup
         }
-        
-        // Green-ish background
         if green > 0.7 && red < 0.7 && blue < 0.7 {
             return .greenGroup
         }
-        
-        // Purple-ish background
         if red > 0.6 && blue > 0.6 && green < 0.6 {
             return .purpleGroup
         }
-        
-        // Light gray background
         if red > 0.8 && green > 0.8 && blue > 0.8 && red < 0.95 {
             return .grayGroup
         }
         
-        // White or near-white
         return .white
     }
     
@@ -273,6 +294,55 @@ actor SheetsService {
         
         static func < (lhs: GroupColor, rhs: GroupColor) -> Bool {
             lhs.rawValue < rhs.rawValue
+        }
+    }
+    func fetchSheetNamesWithIds() async throws -> [(name: String, sheetId: Int)] {
+        let token = try await GoogleAuthService.shared.getAccessToken()
+        let url = URL(string: "\(baseURL)/\(spreadsheetId)")!
+        
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        let (data, _) = try await URLSession.shared.data(for: request)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        
+        guard let sheets = json?["sheets"] as? [[String: Any]] else {
+            throw SheetsError.noValidationFound
+        }
+        
+        return sheets.compactMap { sheet in
+            guard let props = sheet["properties"] as? [String: Any],
+                let title = props["title"] as? String,
+                let sheetId = props["sheetId"] as? Int
+            else { return nil }
+            return (name: title, sheetId: sheetId)
+        }
+    }
+
+    func copySheet(sourceSheetId: Int, newTitle: String, insertAtIndex: Int) async throws {
+        let token = try await GoogleAuthService.shared.getAccessToken()
+        let url = URL(string: "\(baseURL)/\(spreadsheetId):batchUpdate")!
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let body: [String: Any] = [
+            "requests": [[
+                "duplicateSheet": [
+                    "sourceSheetId": sourceSheetId,
+                    "insertSheetIndex": insertAtIndex,
+                    "newSheetName": newTitle
+                ]
+            ]]
+        ]
+        
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (_, response) = try await URLSession.shared.data(for: request)
+        
+        if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode >= 400 {
+            throw SheetsError.noValidationFound
         }
     }
 }
