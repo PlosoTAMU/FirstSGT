@@ -306,12 +306,15 @@ struct ContentView: View {
     
     private var sortedCadets: [Cadet] {
         cadets.sorted { lhs, rhs in
-            if lhs.statusColor != rhs.statusColor {
-                return lhs.statusColor < rhs.statusColor
-            }
+            // 1. Sort by GROUP color first (background color - keeps visual groups together)
             if lhs.groupColor != rhs.groupColor {
                 return lhs.groupColor < rhs.groupColor
             }
+            // 2. THEN sort by status color within each group (gray/blue/yellow/purple)
+            if lhs.statusColor != rhs.statusColor {
+                return lhs.statusColor < rhs.statusColor
+            }
+            // 3. Finally alphabetical by last name
             return lhs.lastName.localizedCaseInsensitiveCompare(rhs.lastName) == .orderedAscending
         }
     }
@@ -347,25 +350,30 @@ struct ContentView: View {
         
         switch color {
         case .purple:
+            // ROTC - show nothing (purple bubble is enough)
             return nil
             
         case .blue:
-            if lower.contains("class") { return "C" }
-            if lower.contains("sick") { return "S" }
-            if lower.contains("work") { return "W" }
-            if lower.contains("religious") { return "R" }
-            if lower.contains("special") { return "U" }
+            // Blue E excuses
+            if lower.contains("other") { return nil }  // E (other)
+            if lower.contains("special") { return "U" }  // E (Special Unit)
+            if lower.contains("class") { return "C" }  // E (Class)
+            if lower.contains("work") { return "W" }  // E (Work)
+            if lower.contains("religious") { return "R" }  // E (religious)
+            if lower.contains("tutoring") { return "T" }  // E (Tutoring/SI)
             return nil
             
         case .yellow:
-            if lower.contains("event") { return "E" }
-            if lower.contains("bag") || lower.contains("refocus") { return "B/R" }
-            if lower.contains("sick") { return "S" }
-            if lower.contains("out") { return "O" }
+            // Yellow E (t-...) excuses
+            if lower.contains("t-other") { return nil }  // E (t-other)
+            if lower.contains("event") { return "E" }  // E (Event)
+            if lower.contains("bag") || lower.contains("refocus") { return "B/R" }  // E (bag/refocus)
+            if lower.contains("sick") { return "S" }  // E (Sick)
+            if lower.contains("out") || lower.contains("town") { return "O" }  // E (out of town)
             return nil
             
         case .gray:
-            return nil
+            return nil  // TBD
         }
     }
     
