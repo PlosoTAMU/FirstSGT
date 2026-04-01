@@ -53,16 +53,18 @@ enum StatusColor: Int, Comparable {
         
         let lower = trimmed.lowercased()
         
-        // Yellow: Check for E (Tut first (more specific)
-        if lower.hasPrefix("e (tut") { 
-            return .yellow 
-        }
-        // Yellow: E (t-...
-        if lower.hasPrefix("e (t-") { 
-            return .yellow 
-        }
-        // Blue: All other E (...)
+        // Check if it's an E (...) excuse
         if lower.hasPrefix("e (") {
+            // YELLOW excuses (explicitly listed)
+            if lower.contains("t-other") ||
+            lower.contains("event") ||
+            lower.contains("bag") ||
+            lower.contains("refocus") ||
+            lower.contains("sick") ||
+            lower.contains("out of town") {
+                return .yellow
+            }
+            // BLUE excuses (everything else: other, Special Unit, Class, Work, religious, Tutoring/SI)
             return .blue
         }
         
@@ -306,13 +308,13 @@ struct ContentView: View {
     
     private var sortedCadets: [Cadet] {
         cadets.sorted { lhs, rhs in
-            // 1. Sort by GROUP color first (background color - keeps visual groups together)
-            if lhs.groupColor != rhs.groupColor {
-                return lhs.groupColor < rhs.groupColor
-            }
-            // 2. THEN sort by status color within each group (gray/blue/yellow/purple)
+            // 1. Sort by STATUS color first (gray TBD → blue E → yellow E → purple ROTC)
             if lhs.statusColor != rhs.statusColor {
                 return lhs.statusColor < rhs.statusColor
+            }
+            // 2. Then by GROUP color (background color - keeps visual groups together)
+            if lhs.groupColor != rhs.groupColor {
+                return lhs.groupColor < rhs.groupColor
             }
             // 3. Finally alphabetical by last name
             return lhs.lastName.localizedCaseInsensitiveCompare(rhs.lastName) == .orderedAscending
@@ -350,30 +352,27 @@ struct ContentView: View {
         
         switch color {
         case .purple:
-            // ROTC - show nothing (purple bubble is enough)
-            return nil
+            return nil  // ROTC shows no code
             
         case .blue:
-            // Blue E excuses
-            if lower.contains("other") { return nil }  // E (other)
-            if lower.contains("special") { return "U" }  // E (Special Unit)
-            if lower.contains("class") { return "C" }  // E (Class)
-            if lower.contains("work") { return "W" }  // E (Work)
-            if lower.contains("religious") { return "R" }  // E (religious)
-            if lower.contains("tutoring") { return "T" }  // E (Tutoring/SI)
-            return nil
+            // Blue: E (other), E (Special Unit), E (Class), E (Work), E (religious), E (Tutoring/SI)
+            if lower.contains("special") { return "U" }
+            if lower.contains("class") { return "C" }
+            if lower.contains("work") { return "W" }
+            if lower.contains("religious") { return "R" }
+            if lower.contains("tutoring") { return "T" }
+            return nil  // E (other) shows nothing
             
         case .yellow:
-            // Yellow E (t-...) excuses
-            if lower.contains("t-other") { return nil }  // E (t-other)
-            if lower.contains("event") { return "E" }  // E (Event)
-            if lower.contains("bag") || lower.contains("refocus") { return "B/R" }  // E (bag/refocus)
-            if lower.contains("sick") { return "S" }  // E (Sick)
-            if lower.contains("out") || lower.contains("town") { return "O" }  // E (out of town)
-            return nil
+            // Yellow: E (t-other), E (Event), E (bag/refocus), E (Sick), E (out of town)
+            if lower.contains("event") { return "E" }
+            if lower.contains("bag") || lower.contains("refocus") { return "B/R" }
+            if lower.contains("sick") { return "S" }
+            if lower.contains("out") { return "O" }
+            return nil  // E (t-other) shows nothing
             
         case .gray:
-            return nil  // TBD
+            return nil
         }
     }
     
