@@ -2,7 +2,7 @@ import SwiftUI
 
 // MARK: - Data Models
 
-struct Soldier: Identifiable, Equatable {
+struct Cadet: Identifiable, Equatable {
     let id = UUID()
     let name: String
     let lastName: String
@@ -12,7 +12,7 @@ struct Soldier: Identifiable, Equatable {
     let statusColor: StatusColor
     let groupColor: SheetsService.GroupColor
     
-    static func == (lhs: Soldier, rhs: Soldier) -> Bool {
+    static func == (lhs: Cadet, rhs: Cadet) -> Bool {
         lhs.row == rhs.row && lhs.name == rhs.name
     }
 }
@@ -81,8 +81,8 @@ struct StatItem: Identifiable {
 }
 
 enum UndoAction {
-    case markPresent(soldier: Soldier, previousValue: String)
-    case markAllUA(soldiers: [Soldier], previousValues: [String])
+    case markPresent(cadet: Cadet, previousValue: String)
+    case markAllUA(cadets: [Cadet], previousValues: [String])
 }
 
 // MARK: - Main View
@@ -98,7 +98,7 @@ struct ContentView: View {
     @State private var selectedSlot: ColumnSlot?
     @State private var showSlotPicker = false
     
-    @State private var soldiers: [Soldier] = []
+    @State private var cadets: [Cadet] = []
     @State private var stats: [StatItem] = []
     
     @State private var inputText = ""
@@ -166,12 +166,12 @@ struct ContentView: View {
             await loadData()
         }
         .confirmationDialog("Mark All as UA?", isPresented: $showUAConfirmation, titleVisibility: .visible) {
-            Button("Mark \(soldiers.count) soldiers as UA", role: .destructive) {
+            Button("Mark \(cadets.count) cadets as UA", role: .destructive) {
                 Task { await markAllAsUA() }
             }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("This will mark all remaining \(soldiers.count) soldiers as Unexcused Absence (UA). This cannot be undone from the app.")
+            Text("This will mark all remaining \(cadets.count) cadets as Unexcused Absence (UA). This cannot be undone from the app.")
         }
         .alert("New Sheet Created", isPresented: $showSheetCreatedAlert) {
             Button("OK") { }
@@ -226,7 +226,7 @@ struct ContentView: View {
                         ForEach(allSlots) { slot in
                             Button(slot.displayName) {
                                 selectedSlot = slot
-                                Task { await loadSoldiers() }
+                                Task { await loadCadets() }
                             }
                         }
                     }
@@ -252,7 +252,7 @@ struct ContentView: View {
                         .foregroundColor(.orange)
                 }
             }
-            .disabled(soldiers.isEmpty || isMarkingUA)
+            .disabled(cadets.isEmpty || isMarkingUA)
         }
         .padding()
     }
@@ -287,16 +287,16 @@ struct ContentView: View {
     private var nameGridView: some View {
         ScrollView {
             FlowLayout(spacing: 8) {
-                ForEach(sortedSoldiers) { soldier in
-                    soldierBubble(soldier)
+                ForEach(sortedCadets) { cadet in
+                    cadetBubble(cadet)
                 }
             }
             .padding()
         }
     }
     
-    private var sortedSoldiers: [Soldier] {
-        soldiers.sorted { lhs, rhs in
+    private var sortedCadets: [Cadet] {
+        cadets.sorted { lhs, rhs in
             if lhs.statusColor != rhs.statusColor {
                 return lhs.statusColor < rhs.statusColor
             }
@@ -307,18 +307,59 @@ struct ContentView: View {
         }
     }
     
-    private func soldierBubble(_ soldier: Soldier) -> some View {
-        Text(soldier.lastName)
-            .font(.system(size: 14, weight: .medium))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(soldier.statusColor.color.opacity(soldier.statusColor == .gray ? 1 : 0.3))
-            .foregroundColor(soldier.statusColor == .gray ? .primary : (soldier.statusColor == .yellow ? .black : soldier.statusColor.color))
-            .cornerRadius(16)
-            .overlay(
-                RoundedRectangle(cornerRadius: 16)
-                    .stroke(soldier.statusColor.borderColor, lineWidth: soldier.statusColor == .gray ? 0 : 1.5)
-            )
+    private func cadetBubble(_ cadet: Cadet) -> some View {
+        HStack(spacing: 4) {
+            Text(cadet.lastName)
+                .font(.system(size: 14, weight: .medium))
+            
+            if let excuseCode = getExcuseCode(from: cadet.value, color: cadet.statusColor) {
+                Text(excuseCode)
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 2)
+                    .background(cadet.statusColor.color)
+                    .cornerRadius(4)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(cadet.statusColor.color.opacity(cadet.statusColor == .gray ? 1 : 0.3))
+        .foregroundColor(cadet.statusColor == .gray ? .primary : (cadet.statusColor == .yellow ? .black : cadet.statusColor.color))
+        .cornerRadius(16)
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(cadet.statusColor.borderColor, lineWidth: cadet.statusColor == .gray ? 0 : 1.5)
+        )
+    }
+
+    private func getExcuseCode(from value: String, color: StatusColor) -> String? {
+        let lower = value.lowercased()
+        
+        switch color {
+        case .purple:
+            return "R" // ROTC
+            
+        case .blue:
+            // E (Class) -> C, E (Sick) -> S, E (Work) -> W, E (religious) -> R, etc.
+            if lower.contains("class") { return "C" }
+            if lower.contains("sick") { return "S" }
+            if lower.contains("work") { return "W" }
+            if lower.contains("religious") { return "R" }
+            if lower.contains("special") { return "T" } // Special uniT
+            return nil // E (other) shows nothing
+            
+        case .yellow:
+            // E (t-other) -> nothing, E (Event) -> E, E (bag/refocus) -> B
+            if lower.contains("event") { return "E" }
+            if lower.contains("bag") || lower.contains("refocus") { return "B" }
+            if lower.contains("sick") { return "S" }
+            if lower.contains("out of town") || lower.contains("out-of-town") { return "O" }
+            return nil // E (t-other) shows nothing
+            
+        case .gray:
+            return nil
+        }
     }
     
     // MARK: - Input Field
@@ -357,8 +398,8 @@ struct ContentView: View {
             return
         }
         
-        let exactMatches = soldiers.filter { soldier in
-            soldier.searchableNames.contains { $0.lowercased() == token.lowercased() }
+        let exactMatches = cadets.filter { cadet in
+            cadet.searchableNames.contains { $0.lowercased() == token.lowercased() }
         }
         
         if exactMatches.count == 1 {
@@ -367,8 +408,8 @@ struct ContentView: View {
             return
         }
         
-        let prefixMatches = soldiers.filter { soldier in
-            soldier.searchableNames.contains { $0.lowercased().hasPrefix(token.lowercased()) }
+        let prefixMatches = cadets.filter { cadet in
+            cadet.searchableNames.contains { $0.lowercased().hasPrefix(token.lowercased()) }
         }
         
         if prefixMatches.count == 1 {
@@ -377,8 +418,8 @@ struct ContentView: View {
             return
         }
         
-        let fuzzyMatches = soldiers.filter { soldier in
-            soldier.searchableNames.contains { levenshteinDistance($0.lowercased(), token.lowercased()) == 1 }
+        let fuzzyMatches = cadets.filter { cadet in
+            cadet.searchableNames.contains { levenshteinDistance($0.lowercased(), token.lowercased()) == 1 }
         }
         
         if fuzzyMatches.count == 1 {
@@ -423,24 +464,24 @@ struct ContentView: View {
         return dp[m][n]
     }
     
-    private func markPresent(_ soldier: Soldier) {
+    private func markPresent(_ cadet: Cadet) {
         guard let slot = selectedSlot else { return }
         
-        undoStack.append(.markPresent(soldier: soldier, previousValue: soldier.value))
+        undoStack.append(.markPresent(cadet: cadet, previousValue: cadet.value))
         
-        soldiers.removeAll { $0 == soldier }
-        showToast("✅ Marked \(soldier.lastName) present")
+        cadets.removeAll { $0 == cadet }
+        showToast("✅ Marked \(cadet.lastName) present")
         
         Task {
             do {
                 let colLetter = await SheetsService.shared.columnLetter(for: slot.columnIndex)
-                let range = "\(selectedSheet)!\(colLetter)\(soldier.row)"
+                let range = "\(selectedSheet)!\(colLetter)\(cadet.row)"
                 try await SheetsService.shared.write(range: range, values: [["P"]])
             } catch {
                 await MainActor.run {
                     undoStack.removeLast()
-                    soldiers.append(soldier)
-                    showToast("❌ Failed to mark \(soldier.lastName)")
+                    cadets.append(cadet)
+                    showToast("❌ Failed to mark \(cadet.lastName)")
                 }
             }
         }
@@ -452,17 +493,17 @@ struct ContentView: View {
         guard let slot = selectedSlot else { return }
         isMarkingUA = true
         
-        let soldiersToMark = soldiers
-        let previousValues = soldiersToMark.map { $0.value }
+        let cadetsToMark = cadets
+        let previousValues = cadetsToMark.map { $0.value }
         
-        undoStack.append(.markAllUA(soldiers: soldiersToMark, previousValues: previousValues))
+        undoStack.append(.markAllUA(cadets: cadetsToMark, previousValues: previousValues))
         
-        for soldier in soldiersToMark {
+        for cadet in cadetsToMark {
             do {
                 let colLetter = await SheetsService.shared.columnLetter(for: slot.columnIndex)
-                let range = "\(selectedSheet)!\(colLetter)\(soldier.row)"
+                let range = "\(selectedSheet)!\(colLetter)\(cadet.row)"
                 try await SheetsService.shared.write(range: range, values: [["UA"]])
-                await MainActor.run { soldiers.removeAll { $0 == soldier } }
+                await MainActor.run { cadets.removeAll { $0 == cadet } }
             } catch {
                 continue
             }
@@ -470,7 +511,7 @@ struct ContentView: View {
         
         await MainActor.run {
             isMarkingUA = false
-            showToast("✅ Marked \(soldiersToMark.count) as UA")
+            showToast("✅ Marked \(cadetsToMark.count) as UA")
         }
     }
     
@@ -482,27 +523,27 @@ struct ContentView: View {
         
         do {
             switch lastAction {
-            case .markPresent(let soldier, let previousValue):
+            case .markPresent(let cadet, let previousValue):
                 let colLetter = await SheetsService.shared.columnLetter(for: slot.columnIndex)
-                let range = "\(selectedSheet)!\(colLetter)\(soldier.row)"
+                let range = "\(selectedSheet)!\(colLetter)\(cadet.row)"
                 try await SheetsService.shared.write(range: range, values: [[previousValue]])
                 await MainActor.run {
-                    soldiers.append(soldier)
-                    showToast("↩️ Restored \(soldier.lastName)")
+                    cadets.append(cadet)
+                    showToast("↩️ Restored \(cadet.lastName)")
                 }
                 
-            case .markAllUA(let soldierList, let previousValues):
-                for (index, soldier) in soldierList.enumerated() {
+            case .markAllUA(let cadetList, let previousValues):
+                for (index, cadet) in cadetList.enumerated() {
                     let colLetter = await SheetsService.shared.columnLetter(for: slot.columnIndex)
-                    let range = "\(selectedSheet)!\(colLetter)\(soldier.row)"
+                    let range = "\(selectedSheet)!\(colLetter)\(cadet.row)"
                     let prevValue = index < previousValues.count ? previousValues[index] : "TBD"
                     try await SheetsService.shared.write(range: range, values: [[prevValue]])
                     await MainActor.run {
-                        soldiers.append(soldier)
+                        cadets.append(cadet)
                     }
                 }
                 await MainActor.run {
-                    showToast("↩️ Restored \(soldierList.count) soldiers")
+                    showToast("↩️ Restored \(cadetList.count) cadets")
                 }
             }
         } catch {
@@ -587,7 +628,7 @@ struct ContentView: View {
                 selectedSlot = autoSelectSlot()
             }
             
-            await loadSoldiers()
+            await loadCadets()
             
         } catch {
             await MainActor.run {
@@ -596,10 +637,10 @@ struct ContentView: View {
         }
     }
     
-    private func loadSoldiers() async {
+    private func loadCadets() async {
         guard let slot = selectedSlot else {
             await MainActor.run {
-                soldiers = []
+                cadets = []
                 stats = []
             }
             return
@@ -611,7 +652,7 @@ struct ContentView: View {
                 columnIndex: slot.columnIndex
             )
             
-            let parsedSoldiers = result.soldiers.compactMap { item -> Soldier? in
+            let parsedCadets = result.cadets.compactMap { item -> Cadet? in
                 guard let statusColor = StatusColor.from(value: item.value) else {
                     return nil
                 }
@@ -630,7 +671,7 @@ struct ContentView: View {
                 
                 let displayName = searchableNames.first ?? lastName
                 
-                return Soldier(
+                return Cadet(
                     name: fullName,
                     lastName: displayName,
                     searchableNames: searchableNames,
@@ -644,7 +685,7 @@ struct ContentView: View {
             let parsedStats = result.stats.map { StatItem(label: $0.label, value: $0.value) }
             
             await MainActor.run {
-                soldiers = parsedSoldiers
+                cadets = parsedCadets
                 stats = parsedStats
                 isInputFocused = true
             }
@@ -681,8 +722,13 @@ struct ContentView: View {
     }
     
     private func findTemplateSheetId() -> Int? {
-        if let mostRecent = allSheetNames.first,
-           let match = sheetsWithIds.first(where: { $0.name == mostRecent }) {
+        // Use the baseline template sheet (first non-date sheet)
+        let templateName = sheetsWithIds
+            .map { $0.name }
+            .first { !$0.contains("-") && !$0.contains("/") && $0.uppercased().contains("TEMPLATE") }
+        
+        if let template = templateName,
+        let match = sheetsWithIds.first(where: { $0.name == template }) {
             return match.sheetId
         }
         return nil

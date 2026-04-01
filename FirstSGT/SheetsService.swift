@@ -139,7 +139,7 @@ actor SheetsService {
     // MARK: - Fetch Names, Values, Colors, AND Statistics
     
     func fetchNamesValuesColorsAndStats(sheet: String, columnIndex: Int) async throws -> (
-        soldiers: [(name: String, value: String, row: Int, groupColor: GroupColor)],
+        cadets: [(name: String, value: String, row: Int, groupColor: GroupColor)],
         stats: [(label: String, value: String)]
     ) {
         let token = try await GoogleAuthService.shared.getAccessToken()
@@ -174,7 +174,7 @@ actor SheetsService {
             throw SheetsError.parseError
         }
         
-        var soldiers: [(name: String, value: String, row: Int, groupColor: GroupColor)] = []
+        var cadets: [(name: String, value: String, row: Int, groupColor: GroupColor)] = []
         var stats: [(label: String, value: String)] = []
         var foundPresent = false
         var foundTotalOutfit = false
@@ -227,7 +227,7 @@ actor SheetsService {
                 continue
             }
             
-            // Regular soldier row (before "present")
+            // Regular cadet row (before "present")
             let groupColor = extractGroupColor(from: nameCell)
             
             if groupColor == .hidden {
@@ -239,10 +239,10 @@ actor SheetsService {
             
             let actualRow = index + 4
             
-            soldiers.append((name: label, value: value, row: actualRow, groupColor: groupColor))
+            cadets.append((name: label, value: value, row: actualRow, groupColor: groupColor))
         }
         
-        return (soldiers: soldiers, stats: stats)
+        return (cadets: cadets, stats: stats)
     }
     
     private func extractCellValue(from cell: [String: Any]) -> String? {
