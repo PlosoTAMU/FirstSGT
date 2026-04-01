@@ -240,7 +240,7 @@ struct ContentView: View {
                                     await MainActor.run {
                                         selectedSlot = slot
                                     }
-                                    await loadSoldiers()
+                                    await loadCadets()
                                 }
                             }
                         }

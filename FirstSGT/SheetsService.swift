@@ -4,7 +4,7 @@ actor SheetsService {
     static let shared = SheetsService()
     
     // old id: let spreadsheetId = "1ugnpvlLtHRJ2qsiS4VxWjdtU8wSJEXKin1LBQdY_C2I"
-    let spreadSheetId = "1Dypmism-aeFhn-gpgnvlewHoIN0W-ajUbtqzHVW7cTE"
+    let spreadsheetId = "1Dypmism-aeFhn-gpgnvlewHoIN0W-ajUbtqzHVW7cTE"
     let baseURL = "https://sheets.googleapis.com/v4/spreadsheets"
     
     // MARK: - Read
