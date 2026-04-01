@@ -52,9 +52,16 @@ enum StatusColor: Int, Comparable {
         if trimmed == "ROTC" { return .purple }
         
         let lower = trimmed.lowercased()
-        if lower.hasPrefix("e (t-") || lower.hasPrefix("e (tut") {
-            return .yellow
+        
+        // Yellow: Check for E (Tut first (more specific)
+        if lower.hasPrefix("e (tut") { 
+            return .yellow 
         }
+        // Yellow: E (t-...
+        if lower.hasPrefix("e (t-") { 
+            return .yellow 
+        }
+        // Blue: All other E (...)
         if lower.hasPrefix("e (") {
             return .blue
         }
@@ -165,13 +172,15 @@ struct ContentView: View {
         .task {
             await loadData()
         }
-        .confirmationDialog("Mark All as UA?", isPresented: $showUAConfirmation, titleVisibility: .visible) {
-            Button("Mark \(cadets.count) cadets as UA", role: .destructive) {
+        .confirmationDialog("Mark All TBD as UA?", isPresented: $showUAConfirmation, titleVisibility: .visible) {
+            let tbdCount = cadets.filter { $0.statusColor == .gray }.count
+            Button("Mark \(tbdCount) TBD cadets as UA", role: .destructive) {
                 Task { await markAllAsUA() }
             }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("This will mark all remaining \(cadets.count) cadets as Unexcused Absence (UA). This cannot be undone from the app.")
+            let tbdCount = cadets.filter { $0.statusColor == .gray }.count
+            Text("This will mark all \(tbdCount) TBD (gray) cadets as Unexcused Absence (UA). This can be undone.")
         }
         .alert("New Sheet Created", isPresented: $showSheetCreatedAlert) {
             Button("OK") { }
@@ -314,7 +323,7 @@ struct ContentView: View {
             
             if let excuseCode = getExcuseCode(from: cadet.value, color: cadet.statusColor) {
                 Text(excuseCode)
-                    .font(.system(size: 12, weight: .bold))
+                    .font(.system(size: 10, weight: .bold))
                     .foregroundColor(.white)
                     .padding(.horizontal, 4)
                     .padding(.vertical, 2)
@@ -338,24 +347,22 @@ struct ContentView: View {
         
         switch color {
         case .purple:
-            return "R" // ROTC
+            return nil
             
         case .blue:
-            // E (Class) -> C, E (Sick) -> S, E (Work) -> W, E (religious) -> R, etc.
             if lower.contains("class") { return "C" }
             if lower.contains("sick") { return "S" }
             if lower.contains("work") { return "W" }
             if lower.contains("religious") { return "R" }
-            if lower.contains("special") { return "T" } // Special uniT
-            return nil // E (other) shows nothing
+            if lower.contains("special") { return "U" }
+            return nil
             
         case .yellow:
-            // E (t-other) -> nothing, E (Event) -> E, E (bag/refocus) -> B
             if lower.contains("event") { return "E" }
-            if lower.contains("bag") || lower.contains("refocus") { return "B" }
+            if lower.contains("bag") || lower.contains("refocus") { return "B/R" }
             if lower.contains("sick") { return "S" }
-            if lower.contains("out of town") || lower.contains("out-of-town") { return "O" }
-            return nil // E (t-other) shows nothing
+            if lower.contains("out") { return "O" }
+            return nil
             
         case .gray:
             return nil
@@ -493,9 +500,11 @@ struct ContentView: View {
         guard let slot = selectedSlot else { return }
         isMarkingUA = true
         
-        let cadetsToMark = cadets
+        // Only mark gray (TBD) cadets
+        let cadetsToMark = cadets.filter { $0.statusColor == .gray }
         let previousValues = cadetsToMark.map { $0.value }
         
+        // Save for undo
         undoStack.append(.markAllUA(cadets: cadetsToMark, previousValues: previousValues))
         
         for cadet in cadetsToMark {
@@ -511,7 +520,11 @@ struct ContentView: View {
         
         await MainActor.run {
             isMarkingUA = false
-            showToast("✅ Marked \(cadetsToMark.count) as UA")
+            if cadetsToMark.isEmpty {
+                showToast("⚠️ No TBD cadets to mark")
+            } else {
+                showToast("✅ Marked \(cadetsToMark.count) TBD cadets as UA")
+            }
         }
     }
     
@@ -722,15 +735,29 @@ struct ContentView: View {
     }
     
     private func findTemplateSheetId() -> Int? {
-        // Use the baseline template sheet (first non-date sheet)
+        // Look for baseline template sheet (contains "TEMPLATE" and doesn't have date format)
         let templateName = sheetsWithIds
-            .map { $0.name }
-            .first { !$0.contains("-") && !$0.contains("/") && $0.uppercased().contains("TEMPLATE") }
+            .first { sheet in
+                let name = sheet.name.uppercased()
+                return name.contains("TEMPLATE") && name.contains("BASELINE")
+            }
         
-        if let template = templateName,
-        let match = sheetsWithIds.first(where: { $0.name == template }) {
-            return match.sheetId
+        if let template = templateName {
+            print("📋 Using template: \(template.name) (ID: \(template.sheetId))")
+            return template.sheetId
         }
+        
+        // Fallback: use first non-date sheet
+        let fallback = sheetsWithIds.first { 
+            !$0.name.contains("-") && !$0.name.contains("/") 
+        }
+        
+        if let fb = fallback {
+            print("📋 Using fallback template: \(fb.name) (ID: \(fb.sheetId))")
+            return fb.sheetId
+        }
+        
+        print("❌ No template sheet found")
         return nil
     }
     
