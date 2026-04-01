@@ -100,7 +100,7 @@ actor SheetsService {
         return sheetsWithIds.map { $0.name }
     }
     
-    // MARK: - Copy Sheet (Create New Week)
+    // MARK: - Copy Sheet
     
     func copySheet(sourceSheetId: Int, newTitle: String, insertAtIndex: Int) async throws {
         let token = try await GoogleAuthService.shared.getAccessToken()
@@ -111,34 +111,22 @@ actor SheetsService {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
-        // Step 1: Duplicate the sheet
-        let duplicateRequest: [String: Any] = [
-            "requests": [
-                [
-                    "duplicateSheet": [
-                        "sourceSheetId": sourceSheetId,
-                        "insertSheetIndex": insertAtIndex,
-                        "newSheetName": newTitle
-                    ]
+        let body: [String: Any] = [
+            "requests": [[
+                "duplicateSheet": [
+                    "sourceSheetId": sourceSheetId,
+                    "insertSheetIndex": insertAtIndex,
+                    "newSheetName": newTitle
                 ]
-            ]
+            ]]
         ]
         
-        request.httpBody = try JSONSerialization.data(withJSONObject: duplicateRequest)
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (_, response) = try await URLSession.shared.data(for: request)
         
-        let (data, response) = try await URLSession.shared.data(for: request)
-        
-        if let httpResponse = response as? HTTPURLResponse {
-            print("📋 [copySheet] HTTP Status: \(httpResponse.statusCode)")
-            if httpResponse.statusCode >= 400 {
-                if let rawString = String(data: data, encoding: .utf8) {
-                    print("❌ [copySheet] Error: \(rawString)")
-                }
-                throw SheetsError.writeFailed
-            }
+        if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode >= 400 {
+            throw SheetsError.writeFailed
         }
-        
-        print("✅ [copySheet] Created new sheet: \(newTitle)")
     }
     
     // MARK: - Fetch Header Rows
@@ -148,9 +136,12 @@ actor SheetsService {
         return try await read(range: range)
     }
     
-    // MARK: - Fetch Names, Values, and Colors
+    // MARK: - Fetch Names, Values, Colors, AND Statistics
     
-    func fetchNamesValuesAndColors(sheet: String, columnIndex: Int) async throws -> [(name: String, value: String, row: Int, groupColor: GroupColor)] {
+    func fetchNamesValuesColorsAndStats(sheet: String, columnIndex: Int) async throws -> (
+        soldiers: [(name: String, value: String, row: Int, groupColor: GroupColor)],
+        stats: [(label: String, value: String)]
+    ) {
         let token = try await GoogleAuthService.shared.getAccessToken()
         
         var allowedCharacters = CharacterSet.urlQueryAllowed
@@ -160,7 +151,7 @@ actor SheetsService {
         }
         
         let colLetter = columnLetter(for: columnIndex)
-        let range = "\(encodedSheet)!A4:\(colLetter)500"
+        let range = "\(encodedSheet)!A4:\(colLetter)600"
         
         let urlString = "\(baseURL)/\(spreadsheetId)?ranges=\(range)&includeGridData=true"
         guard let url = URL(string: urlString) else {
@@ -183,7 +174,14 @@ actor SheetsService {
             throw SheetsError.parseError
         }
         
-        var results: [(name: String, value: String, row: Int, groupColor: GroupColor)] = []
+        var soldiers: [(name: String, value: String, row: Int, groupColor: GroupColor)] = []
+        var stats: [(label: String, value: String)] = []
+        var foundPresent = false
+        var foundTotalOutfit = false
+        
+        // Labels that indicate we've hit statistics section
+        let statLabels = ["present", "ua", "excused", "total absent", "predicted present", 
+                          "duncan reported", "total outfit", "total zip"]
         
         for (index, row) in rowData.enumerated() {
             guard let values = row["values"] as? [[String: Any]],
@@ -191,12 +189,45 @@ actor SheetsService {
             else { continue }
             
             let nameCell = values[0]
-            guard let name = extractCellValue(from: nameCell), !name.isEmpty else { continue }
+            guard let label = extractCellValue(from: nameCell), !label.isEmpty else { continue }
             
-            if name.lowercased().contains("present") {
-                break
+            let labelLower = label.lowercased()
+            
+            // Check if we've hit "present" - start of stats section
+            if labelLower == "present" {
+                foundPresent = true
             }
             
+            // If we're in the stats section
+            if foundPresent {
+                // Check if we've hit "total outfit" - switch to column B
+                if labelLower.contains("total outfit") {
+                    foundTotalOutfit = true
+                }
+                
+                // Get the value from the appropriate column
+                let statValue: String
+                if foundTotalOutfit {
+                    // Column B (index 1)
+                    if values.count > 1 {
+                        statValue = extractCellValue(from: values[1]) ?? "0"
+                    } else {
+                        statValue = "0"
+                    }
+                } else {
+                    // Slot column
+                    if columnIndex < values.count {
+                        statValue = extractCellValue(from: values[columnIndex]) ?? "0"
+                    } else {
+                        statValue = "0"
+                    }
+                }
+                
+                stats.append((label: label, value: statValue))
+                continue
+            }
+            
+            // Regular soldier row (before "present")
             let groupColor = extractGroupColor(from: nameCell)
             
             if groupColor == .hidden {
@@ -208,12 +239,10 @@ actor SheetsService {
             
             let actualRow = index + 4
             
-            print("   Row \(actualRow): '\(name)' = '\(value)' group=\(groupColor)")
-            
-            results.append((name: name, value: value, row: actualRow, groupColor: groupColor))
+            soldiers.append((name: label, value: value, row: actualRow, groupColor: groupColor))
         }
         
-        return results
+        return (soldiers: soldiers, stats: stats)
     }
     
     private func extractCellValue(from cell: [String: Any]) -> String? {
@@ -222,7 +251,7 @@ actor SheetsService {
         }
         if let effectiveValue = cell["effectiveValue"] as? [String: Any] {
             if let str = effectiveValue["stringValue"] as? String { return str }
-            if let num = effectiveValue["numberValue"] as? Double { return String(num) }
+            if let num = effectiveValue["numberValue"] as? Double { return String(Int(num)) }
         }
         return nil
     }
@@ -294,55 +323,6 @@ actor SheetsService {
         
         static func < (lhs: GroupColor, rhs: GroupColor) -> Bool {
             lhs.rawValue < rhs.rawValue
-        }
-    }
-    func fetchSheetNamesWithIds() async throws -> [(name: String, sheetId: Int)] {
-        let token = try await GoogleAuthService.shared.getAccessToken()
-        let url = URL(string: "\(baseURL)/\(spreadsheetId)")!
-        
-        var request = URLRequest(url: url)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        
-        let (data, _) = try await URLSession.shared.data(for: request)
-        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        
-        guard let sheets = json?["sheets"] as? [[String: Any]] else {
-            throw SheetsError.noValidationFound
-        }
-        
-        return sheets.compactMap { sheet in
-            guard let props = sheet["properties"] as? [String: Any],
-                let title = props["title"] as? String,
-                let sheetId = props["sheetId"] as? Int
-            else { return nil }
-            return (name: title, sheetId: sheetId)
-        }
-    }
-
-    func copySheet(sourceSheetId: Int, newTitle: String, insertAtIndex: Int) async throws {
-        let token = try await GoogleAuthService.shared.getAccessToken()
-        let url = URL(string: "\(baseURL)/\(spreadsheetId):batchUpdate")!
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
-        let body: [String: Any] = [
-            "requests": [[
-                "duplicateSheet": [
-                    "sourceSheetId": sourceSheetId,
-                    "insertSheetIndex": insertAtIndex,
-                    "newSheetName": newTitle
-                ]
-            ]]
-        ]
-        
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (_, response) = try await URLSession.shared.data(for: request)
-        
-        if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode >= 400 {
-            throw SheetsError.noValidationFound
         }
     }
 }
