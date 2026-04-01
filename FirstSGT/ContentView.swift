@@ -236,8 +236,12 @@ struct ContentView: View {
                     .confirmationDialog("Select Slot", isPresented: $showSlotPicker) {
                         ForEach(allSlots) { slot in
                             Button(slot.displayName) {
-                                selectedSlot = slot
-                                Task { await loadCadets() }
+                                Task {
+                                    await MainActor.run {
+                                        selectedSlot = slot
+                                    }
+                                    await loadSoldiers()
+                                }
                             }
                         }
                     }
