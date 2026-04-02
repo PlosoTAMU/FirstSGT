@@ -177,6 +177,7 @@ actor SheetsService {
         var cadets: [(name: String, value: String, row: Int, groupColor: GroupColor)] = []
         var stats: [(label: String, value: String)] = []
         var inStatsSection = false
+        var useColumnB = false  // Track when to switch to column B
         
         for (index, row) in rowData.enumerated() {
             guard let values = row["values"] as? [[String: Any]], !values.isEmpty else { continue }
@@ -192,13 +193,28 @@ actor SheetsService {
             }
             
             if inStatsSection {
-                // Read stat value from the SAME column as the slot
-                let statValue: String
-                if columnIndex < values.count {
-                    statValue = extractCellValue(from: values[columnIndex]) ?? "0"
-                } else {
-                    statValue = "0"
+                // From "Total Outfit" onward, read from column B (index 1)
+                if labelLower.contains("total outfit") {
+                    useColumnB = true
                 }
+                
+                let statValue: String
+                if useColumnB {
+                    // Read from column B (index 1)
+                    if values.count > 1 {
+                        statValue = extractCellValue(from: values[1]) ?? "0"
+                    } else {
+                        statValue = "0"
+                    }
+                } else {
+                    // Read from the slot column
+                    if columnIndex < values.count {
+                        statValue = extractCellValue(from: values[columnIndex]) ?? "0"
+                    } else {
+                        statValue = "0"
+                    }
+                }
+                
                 stats.append((label: label, value: statValue))
                 continue
             }
