@@ -233,8 +233,6 @@ struct ContentView: View {
         }
         .task {
             await loadData()
-        }
-        .onAppear {
             startAutoRefresh()
         }
         .onDisappear {
@@ -397,9 +395,9 @@ struct ContentView: View {
     
     private func startAutoRefresh() {
         refreshTimer?.invalidate()
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 8.0, repeats: true) { _ in
             Task {
-                await refreshSoldiersQuietly()
+                await refreshCadetsQuietly()
             }
         }
     }
@@ -409,7 +407,7 @@ struct ContentView: View {
         refreshTimer = nil
     }
 
-    private func refreshSoldiersQuietly() async {
+    private func refreshCadetsQuietly() async {
         guard let slot = selectedSlot else { return }
         
         do {

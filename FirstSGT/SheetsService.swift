@@ -6,6 +6,46 @@ actor SheetsService {
     // old id: let spreadsheetId = "1ugnpvlLtHRJ2qsiS4VxWjdtU8wSJEXKin1LBQdY_C2I"
     let spreadsheetId = "1Dypmism-aeFhn-gpgnvlewHoIN0W-ajUbtqzHVW7cTE"
     let baseURL = "https://sheets.googleapis.com/v4/spreadsheets"
+    // Add cache
+    private var cachedSheetNames: [(name: String, sheetId: Int)]?
+    private var sheetNamesCacheTime: Date?
+    
+    func fetchSheetNamesWithIds(forceRefresh: Bool = false) async throws -> [(name: String, sheetId: Int)] {
+        // Return cached if less than 5 minutes old
+        if !forceRefresh,
+           let cached = cachedSheetNames,
+           let cacheTime = sheetNamesCacheTime,
+           Date().timeIntervalSince(cacheTime) < 300 {
+            return cached
+        }
+        
+        let token = try await GoogleAuthService.shared.getAccessToken()
+        let url = URL(string: "\(baseURL)/\(spreadsheetId)")!
+        
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        let (data, _) = try await URLSession.shared.data(for: request)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        
+        guard let sheets = json?["sheets"] as? [[String: Any]] else {
+            throw SheetsError.parseError
+        }
+        
+        let result = sheets.compactMap { sheet -> (name: String, sheetId: Int)? in
+            guard let props = sheet["properties"] as? [String: Any],
+                  let title = props["title"] as? String,
+                  let sheetId = props["sheetId"] as? Int
+            else { return nil }
+            return (name: title, sheetId: sheetId)
+        }
+        
+        // Cache the result
+        cachedSheetNames = result
+        sheetNamesCacheTime = Date()
+        
+        return result
+    }
     
     // MARK: - Read
     
@@ -298,8 +338,6 @@ actor SheetsService {
         let green = bgColor["green"] as? Double ?? 1.0
         let blue = bgColor["blue"] as? Double ?? 1.0
         
-        // Debug: Print RGB values to console
-        print("🎨 RGB: r=\(String(format: "%.2f", red)), g=\(String(format: "%.2f", green)), b=\(String(format: "%.2f", blue))")
         
         // Dark gray = hidden (skip these people entirely)
         if red < 0.5 && green < 0.5 && blue < 0.5 {
