@@ -97,6 +97,8 @@ enum UndoAction {
 // MARK: - Main View
 
 struct ContentView: View {
+    @State private var refreshTimer: Timer?
+
     @State private var allSheetNames: [String] = []
     @State private var sheetsWithIds: [(name: String, sheetId: Int)] = []
     @State private var selectedSheet: String = ""
@@ -126,7 +128,64 @@ struct ContentView: View {
     @State private var showSheetCreatedAlert = false
     @State private var createdSheetName = ""
     
-    @State private var showStatsSheet = false
+    @State private var showStatsSheet = false@State private var selectedCadetForComment: Cadet?
+    @State private var commentText: String?
+    @State private var showCommentAlert = false
+
+    private func cadetBubble(_ cadet: Cadet) -> some View {
+        HStack(spacing: 4) {
+            Text(cadet.lastName)
+                .font(.system(size: 14, weight: .medium))
+            
+            if let excuseCode = getExcuseCode(from: cadet.value, color: cadet.statusColor) {
+                Text(excuseCode)
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 2)
+                    .background(cadet.statusColor.color)
+                    .cornerRadius(4)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(cadet.statusColor.color.opacity(cadet.statusColor == .gray ? 1 : 0.3))
+        .foregroundColor(cadet.statusColor == .gray ? .primary : (cadet.statusColor == .yellow ? .black : cadet.statusColor.color))
+        .cornerRadius(16)
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(cadet.statusColor.borderColor, lineWidth: cadet.statusColor == .gray ? 0 : 1.5)
+        )
+        .onLongPressGesture {
+            Task {
+                await fetchCommentForCadet(cadet)
+            }
+        }
+    }
+
+    private func fetchCommentForCadet(_ cadet: Cadet) async {
+        guard let slot = selectedSlot else { return }
+        
+        do {
+            let comment = try await SheetsService.shared.fetchCellComment(
+                sheet: selectedSheet,
+                column: slot.columnIndex,
+                row: cadet.row
+            )
+            
+            await MainActor.run {
+                selectedCadetForComment = cadet
+                commentText = comment ?? "No comment"
+                showCommentAlert = true
+            }
+        } catch {
+            await MainActor.run {
+                selectedCadetForComment = cadet
+                commentText = "Failed to load comment"
+                showCommentAlert = true
+            }
+        }
+    }
     
     var body: some View {
         VStack(spacing: 0) {
@@ -174,6 +233,12 @@ struct ContentView: View {
         .task {
             await loadData()
         }
+        .onAppear {
+            startAutoRefresh()
+        }
+        .onDisappear {
+            stopAutoRefresh()
+        }
         .confirmationDialog("Mark All TBD as UA?", isPresented: $showUAConfirmation, titleVisibility: .visible) {
             let tbdCount = cadets.filter { $0.statusColor == .gray }.count
             Button("Mark \(tbdCount) TBD cadets as UA", role: .destructive) {
@@ -192,6 +257,11 @@ struct ContentView: View {
         .sheet(isPresented: $showStatsSheet) {
             statsView
         }
+        .alert("\(selectedCadetForComment?.lastName ?? "Cadet")", isPresented: $showCommentAlert) {
+            Button("OK") { }
+        } message: {
+            Text(commentText ?? "No comment")
+        }
     }
     
     // MARK: - Header View
@@ -204,6 +274,13 @@ struct ContentView: View {
                     .foregroundColor(undoStack.isEmpty ? .gray : .blue)
             }
             .disabled(undoStack.isEmpty || isUndoing)
+        
+            // Open in Google Sheets button
+            Button(action: openInGoogleSheets) {
+                Image(systemName: "arrow.up.right.square")
+                    .font(.title2)
+                    .foregroundColor(.green)
+            }
             
             Spacer()
             
@@ -271,6 +348,13 @@ struct ContentView: View {
         }
         .padding()
     }
+
+    private func openInGoogleSheets() {
+        let sheetURL = "https://docs.google.com/spreadsheets/d/1ugnpvlLtHRJ2qsiS4VxWjdtU8wSJEXKin1LBQdY_C2I/edit#gid=0"
+        if let url = URL(string: sheetURL) {
+            UIApplication.shared.open(url)
+        }
+    }
     
     // MARK: - Stats View
     
@@ -310,6 +394,67 @@ struct ContentView: View {
         }
     }
     
+    private func startAutoRefresh() {
+        refreshTimer?.invalidate()
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+            Task {
+                await refreshSoldiersQuietly()
+            }
+        }
+    }
+
+    private func stopAutoRefresh() {
+        refreshTimer?.invalidate()
+        refreshTimer = nil
+    }
+
+    private func refreshSoldiersQuietly() async {
+        guard let slot = selectedSlot else { return }
+        
+        do {
+            let data = try await SheetsService.shared.fetchNamesValuesAndColors(
+                sheet: selectedSheet,
+                columnIndex: slot.columnIndex
+            )
+            
+            let newCadets = data.compactMap { item -> Cadet? in
+                guard let statusColor = StatusColor.from(value: item.value) else { return nil }
+                
+                let fullName = item.name
+                let lastName = fullName.components(separatedBy: ",").first?.trimmingCharacters(in: .whitespaces) ?? fullName
+                
+                var searchableNames: [String] = []
+                let nameParts = lastName.components(separatedBy: "/")
+                for part in nameParts {
+                    let trimmed = part.trimmingCharacters(in: .whitespaces)
+                    if !trimmed.isEmpty { searchableNames.append(trimmed) }
+                }
+                
+                let displayName = searchableNames.first ?? lastName
+                
+                return Cadet(
+                    name: fullName,
+                    lastName: displayName,
+                    searchableNames: searchableNames,
+                    value: item.value,
+                    row: item.row,
+                    statusColor: statusColor,
+                    groupColor: item.groupColor
+                )
+            }
+            
+            await MainActor.run {
+                // Only update if different to avoid UI flicker
+                if newCadets.map({ $0.row }) != cadets.map({ $0.row }) ||
+                newCadets.map({ $0.value }) != cadets.map({ $0.value }) {
+                    cadets = newCadets
+                }
+            }
+        } catch {
+            // Silent fail for background refresh
+        }
+    }
+
     private var sortedCadets: [Cadet] {
         cadets.sorted { lhs, rhs in
             // 1. Sort by STATUS color first (gray TBD → blue E → yellow E → purple ROTC)

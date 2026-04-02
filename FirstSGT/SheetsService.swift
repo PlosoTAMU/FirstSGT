@@ -152,7 +152,7 @@ actor SheetsService {
         }
         
         let colLetter = columnLetter(for: columnIndex)
-        let range = "\(encodedSheet)!A4:\(colLetter)600"
+        let range = "\(encodedSheet)!A4:\(colLetter)100"
         
         let urlString = "\(baseURL)/\(spreadsheetId)?ranges=\(range)&includeGridData=true"
         guard let url = URL(string: urlString) else {
@@ -163,87 +163,101 @@ actor SheetsService {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         
         let (data, _) = try await URLSession.shared.data(for: request)
-        
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         
         guard let sheets = json?["sheets"] as? [[String: Any]],
-              let firstSheet = sheets.first,
-              let dataArray = firstSheet["data"] as? [[String: Any]],
-              let gridData = dataArray.first,
-              let rowData = gridData["rowData"] as? [[String: Any]]
+            let firstSheet = sheets.first,
+            let dataArray = firstSheet["data"] as? [[String: Any]],
+            let gridData = dataArray.first,
+            let rowData = gridData["rowData"] as? [[String: Any]]
         else {
             throw SheetsError.parseError
         }
         
         var cadets: [(name: String, value: String, row: Int, groupColor: GroupColor)] = []
         var stats: [(label: String, value: String)] = []
-        var foundPresent = false
-        var foundTotalOutfit = false
-        
-        // Labels that indicate we've hit statistics section
-        let statLabels = ["present", "ua", "excused", "total absent", "predicted present", 
-                          "duncan reported", "total outfit", "total zip"]
+        var inStatsSection = false
         
         for (index, row) in rowData.enumerated() {
-            guard let values = row["values"] as? [[String: Any]],
-                  !values.isEmpty
-            else { continue }
+            guard let values = row["values"] as? [[String: Any]], !values.isEmpty else { continue }
             
             let nameCell = values[0]
             guard let label = extractCellValue(from: nameCell), !label.isEmpty else { continue }
             
             let labelLower = label.lowercased()
             
-            // Check if we've hit "present" - start of stats section
+            // Stats section starts at "Present"
             if labelLower == "present" {
-                foundPresent = true
+                inStatsSection = true
             }
             
-            // If we're in the stats section
-            if foundPresent {
-                // Check if we've hit "total outfit" - switch to column B
-                if labelLower.contains("total outfit") {
-                    foundTotalOutfit = true
-                }
-                
-                // Get the value from the appropriate column
+            if inStatsSection {
+                // Read stat value from the SAME column as the slot
                 let statValue: String
-                if foundTotalOutfit {
-                    // Column B (index 1)
-                    if values.count > 1 {
-                        statValue = extractCellValue(from: values[1]) ?? "0"
-                    } else {
-                        statValue = "0"
-                    }
+                if columnIndex < values.count {
+                    statValue = extractCellValue(from: values[columnIndex]) ?? "0"
                 } else {
-                    // Slot column
-                    if columnIndex < values.count {
-                        statValue = extractCellValue(from: values[columnIndex]) ?? "0"
-                    } else {
-                        statValue = "0"
-                    }
+                    statValue = "0"
                 }
-                
                 stats.append((label: label, value: statValue))
                 continue
             }
             
-            // Regular cadet row (before "present")
+            // Regular cadet row
             let groupColor = extractGroupColor(from: nameCell)
-            
-            if groupColor == .hidden {
-                continue
-            }
+            if groupColor == .hidden { continue }
             
             let valueCell = columnIndex < values.count ? values[columnIndex] : [:]
             let value = extractCellValue(from: valueCell) ?? "TBD"
-            
             let actualRow = index + 4
             
             cadets.append((name: label, value: value, row: actualRow, groupColor: groupColor))
         }
         
         return (cadets: cadets, stats: stats)
+    }
+
+    func fetchCellComment(sheet: String, column: Int, row: Int) async throws -> String? {
+        let token = try await GoogleAuthService.shared.getAccessToken()
+        
+        var allowedCharacters = CharacterSet.urlQueryAllowed
+        allowedCharacters.remove("/")
+        guard let encodedSheet = sheet.addingPercentEncoding(withAllowedCharacters: allowedCharacters) else {
+            throw SheetsError.parseError
+        }
+        
+        let colLetter = columnLetter(for: column)
+        let range = "\(encodedSheet)!\(colLetter)\(row)"
+        
+        let urlString = "\(baseURL)/\(spreadsheetId)?ranges=\(range)&includeGridData=true"
+        guard let url = URL(string: urlString) else {
+            throw SheetsError.parseError
+        }
+        
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        let (data, _) = try await URLSession.shared.data(for: request)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        
+        guard let sheets = json?["sheets"] as? [[String: Any]],
+            let firstSheet = sheets.first,
+            let dataArray = firstSheet["data"] as? [[String: Any]],
+            let gridData = dataArray.first,
+            let rowData = gridData["rowData"] as? [[String: Any]],
+            let firstRow = rowData.first,
+            let values = firstRow["values"] as? [[String: Any]],
+            let cell = values.first
+        else {
+            return nil
+        }
+        
+        // Check for note
+        if let note = cell["note"] as? String {
+            return note
+        }
+        
+        return nil
     }
     
     private func extractCellValue(from cell: [String: Any]) -> String? {
