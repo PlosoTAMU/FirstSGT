@@ -128,7 +128,8 @@ struct ContentView: View {
     @State private var showSheetCreatedAlert = false
     @State private var createdSheetName = ""
     
-    @State private var showStatsSheet = false@State private var selectedCadetForComment: Cadet?
+    @State private var showStatsSheet = false
+    @State private var selectedCadetForComment: Cadet?
     @State private var commentText: String?
     @State private var showCommentAlert = false
 
@@ -412,12 +413,12 @@ struct ContentView: View {
         guard let slot = selectedSlot else { return }
         
         do {
-            let data = try await SheetsService.shared.fetchNamesValuesAndColors(
+            let data = try await SheetsService.shared.fetchNamesValuesColorsAndStats(
                 sheet: selectedSheet,
                 columnIndex: slot.columnIndex
             )
             
-            let newCadets = data.compactMap { item -> Cadet? in
+            let newCadets = data.cadets.compactMap { item -> Cadet? in
                 guard let statusColor = StatusColor.from(value: item.value) else { return nil }
                 
                 let fullName = item.name
@@ -470,31 +471,6 @@ struct ContentView: View {
         }
     }
     
-    private func cadetBubble(_ cadet: Cadet) -> some View {
-        HStack(spacing: 4) {
-            Text(cadet.lastName)
-                .font(.system(size: 14, weight: .medium))
-            
-            if let excuseCode = getExcuseCode(from: cadet.value, color: cadet.statusColor) {
-                Text(excuseCode)
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 2)
-                    .background(cadet.statusColor.color)
-                    .cornerRadius(4)
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(cadet.statusColor.color.opacity(cadet.statusColor == .gray ? 1 : 0.3))
-        .foregroundColor(cadet.statusColor == .gray ? .primary : (cadet.statusColor == .yellow ? .black : cadet.statusColor.color))
-        .cornerRadius(16)
-        .overlay(
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(cadet.statusColor.borderColor, lineWidth: cadet.statusColor == .gray ? 0 : 1.5)
-        )
-    }
 
     private func getExcuseCode(from value: String, color: StatusColor) -> String? {
         let lower = value.lowercased()
