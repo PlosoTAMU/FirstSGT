@@ -354,31 +354,19 @@ actor SheetsService {
             return .white
         }
         
-        // Light Yellow 2 - RGB(255, 242, 204) = (1.0, 0.95, 0.8)
-        if red > 0.9 && green > 0.85 && blue > 0.65 && blue < 0.9 {
+        // Yellow Group - RGB(1.00, 0.90, 0.60)
+        if red > 0.95 && green > 0.85 && green < 0.95 && blue > 0.55 && blue < 0.70 {
             print("   → Yellow Group")
             return .yellowGroup
         }
         
-        // Light Cornflower Blue 2 - RGB(207, 226, 243) = (0.81, 0.89, 0.95)
-        if blue > 0.85 && green > 0.80 && red > 0.70 && red < 0.90 {
+        // Blue Group (light blue) - RGB(0.64, 0.76, 0.96)
+        if red > 0.60 && red < 0.70 && green > 0.70 && green < 0.80 && blue > 0.90 {
             print("   → Blue Group")
             return .blueGroup
         }
         
-        // Light Red 3 - RGB(244, 204, 204) = (0.96, 0.8, 0.8)
-        if red > 0.85 && green > 0.70 && green < 0.90 && blue > 0.70 && blue < 0.90 {
-            print("   → Purple Group (red bg)")
-            return .purpleGroup
-        }
-        
-        // Light Green 3 - RGB(217, 234, 211) = (0.85, 0.92, 0.83)
-        if green > 0.85 && red > 0.75 && red < 0.92 && blue > 0.75 && blue < 0.90 {
-            print("   → Green Group")
-            return .greenGroup
-        }
-        
-        // Light gray background - RGB(217, 217, 217) ≈ (0.85, 0.85, 0.85)
+        // Light gray background - RGB around (0.85, 0.85, 0.85)
         if red > 0.75 && red < 0.95 && green > 0.75 && green < 0.95 && blue > 0.75 && blue < 0.95 {
             let diff = abs(red - green) + abs(green - blue) + abs(blue - red)
             if diff < 0.1 {  // All three values are close together = gray
