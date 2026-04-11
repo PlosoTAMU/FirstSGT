@@ -331,7 +331,6 @@ actor SheetsService {
         guard let effectiveFormat = cell["effectiveFormat"] as? [String: Any],
             let bgColor = effectiveFormat["backgroundColor"] as? [String: Any]
         else {
-            print("⚠️ No background color found, defaulting to white")
             return .white
         }
         
@@ -339,12 +338,11 @@ actor SheetsService {
         let green = bgColor["green"] as? Double ?? 1.0
         let blue = bgColor["blue"] as? Double ?? 1.0
         
-        // Debug print to see actual values
         print("🎨 RGB: (\(String(format: "%.2f", red)), \(String(format: "%.2f", green)), \(String(format: "%.2f", blue)))")
         
         // Dark gray = hidden (skip these people entirely)
         if red < 0.5 && green < 0.5 && blue < 0.5 {
-            print("   → Hidden (dark gray)")
+            print("   → Hidden")
             return .hidden
         }
         
@@ -354,25 +352,35 @@ actor SheetsService {
             return .white
         }
         
-        // Yellow Group - RGB(1.00, 0.90, 0.60)
-        if red > 0.95 && green > 0.85 && green < 0.95 && blue > 0.55 && blue < 0.70 {
+        // Yellow group - RGB(1.00, 0.90, 0.60)
+        // High red, high green, lower blue
+        if red > 0.90 && green > 0.80 && green < 0.95 && blue > 0.50 && blue < 0.75 {
             print("   → Yellow Group")
             return .yellowGroup
         }
         
-        // Blue Group (light blue) - RGB(0.64, 0.76, 0.96)
-        if red > 0.60 && red < 0.70 && green > 0.70 && green < 0.80 && blue > 0.90 {
+        // Blue group - RGB(0.64, 0.76, 0.96)
+        // Lower red, medium green, high blue
+        if red > 0.55 && red < 0.75 && green > 0.70 && green < 0.85 && blue > 0.90 {
             print("   → Blue Group")
             return .blueGroup
         }
         
-        // Light gray background - RGB around (0.85, 0.85, 0.85)
-        if red > 0.75 && red < 0.95 && green > 0.75 && green < 0.95 && blue > 0.75 && blue < 0.95 {
-            let diff = abs(red - green) + abs(green - blue) + abs(blue - red)
-            if diff < 0.1 {  // All three values are close together = gray
-                print("   → Gray Group")
-                return .grayGroup
+        // Red group - typically RGB around (0.96, 0.80, 0.80)
+        // High red, medium-ish green and blue that are similar
+        if red > 0.90 && green > 0.70 && green < 0.90 && blue > 0.70 && blue < 0.90 {
+            let gbDiff = abs(green - blue)
+            if gbDiff < 0.1 {  // Green and blue are close = pinkish/red
+                print("   → Red Group")
+                return .redGroup
             }
+        }
+        
+        // Light blue group - typically RGB around (0.85, 0.92, 0.95)
+        // All high values but blue is highest
+        if red > 0.75 && red < 0.92 && green > 0.85 && blue > 0.90 {
+            print("   → Light Blue Group")
+            return .lightBlueGroup
         }
         
         // Fallback
@@ -406,11 +414,10 @@ actor SheetsService {
     enum GroupColor: Int, Comparable {
         case hidden = -1
         case white = 0
-        case grayGroup = 1
-        case blueGroup = 2
-        case greenGroup = 3
-        case yellowGroup = 4
-        case purpleGroup = 5
+        case yellowGroup = 1   // Yellow first
+        case blueGroup = 2     // Then blue
+        case redGroup = 3      // Then red
+        case lightBlueGroup = 4 // Then light blue
         
         static func < (lhs: GroupColor, rhs: GroupColor) -> Bool {
             lhs.rawValue < rhs.rawValue
