@@ -442,9 +442,19 @@ struct ContentView: View {
 
     private func openInGoogleSheets() {
         let spreadsheetId = "1Dypmism-aeFhn-gpgnvlewHoIN0W-ajUbtqzHVW7cTE"
-        let sheetURL = "https://docs.google.com/spreadsheets/d/\(spreadsheetId)/edit#gid=0"
-        if let url = URL(string: sheetURL) {
-            UIApplication.shared.open(url)
+        
+        // Find the gid for the currently selected sheet
+        if let sheetInfo = sheetsWithIds.first(where: { $0.name == selectedSheet }) {
+            let sheetURL = "https://docs.google.com/spreadsheets/d/\(spreadsheetId)/edit#gid=\(sheetInfo.sheetId)"
+            if let url = URL(string: sheetURL) {
+                UIApplication.shared.open(url)
+            }
+        } else {
+            // Fallback to just opening the spreadsheet
+            let sheetURL = "https://docs.google.com/spreadsheets/d/\(spreadsheetId)/edit"
+            if let url = URL(string: sheetURL) {
+                UIApplication.shared.open(url)
+            }
         }
     }
     
@@ -485,6 +495,7 @@ struct ContentView: View {
             .padding()
         }
     }
+    
     private func markWithStatus(_ cadet: Cadet, status: String) {
         guard let slot = selectedSlot else { return }
         
@@ -493,11 +504,6 @@ struct ContentView: View {
         // Remove from list if marked P or UA (they're "done")
         if status == "P" || status == "UA" {
             cadets.removeAll { $0 == cadet }
-        } else {
-            // Update the cadet's status in place
-            if let index = cadets.firstIndex(of: cadet) {
-                // We need to reload to get the updated status color
-            }
         }
         
         let statusEmoji = status == "P" ? "✅" : (status == "UA" ? "❌" : "📝")
@@ -509,10 +515,9 @@ struct ContentView: View {
                 let range = "\(selectedSheet)!\(colLetter)\(cadet.row)"
                 try await SheetsService.shared.write(range: range, values: [[status]])
                 
-                // Refresh to show updated status if not removed
-                if status != "P" && status != "UA" {
-                    await refreshCadetsQuietly()
-                }
+                // Always refresh after marking to show updated status color
+                await loadCadets()
+                
             } catch {
                 await MainActor.run {
                     undoStack.removeLast()
@@ -524,6 +529,9 @@ struct ContentView: View {
             }
         }
     }
+
+
+
     private func startAutoRefresh() {
         refreshTimer?.invalidate()
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 8.0, repeats: true) { _ in

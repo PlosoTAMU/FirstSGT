@@ -331,6 +331,7 @@ actor SheetsService {
         guard let effectiveFormat = cell["effectiveFormat"] as? [String: Any],
             let bgColor = effectiveFormat["backgroundColor"] as? [String: Any]
         else {
+            print("⚠️ No background color found, defaulting to white")
             return .white
         }
         
@@ -338,44 +339,56 @@ actor SheetsService {
         let green = bgColor["green"] as? Double ?? 1.0
         let blue = bgColor["blue"] as? Double ?? 1.0
         
+        // Debug print to see actual values
+        print("🎨 RGB: (\(String(format: "%.2f", red)), \(String(format: "%.2f", green)), \(String(format: "%.2f", blue)))")
         
         // Dark gray = hidden (skip these people entirely)
         if red < 0.5 && green < 0.5 && blue < 0.5 {
+            print("   → Hidden (dark gray)")
             return .hidden
         }
         
         // Pure white or near-white (default/no background)
-        if red > 0.99 && green > 0.99 && blue > 0.99 {
+        if red > 0.95 && green > 0.95 && blue > 0.95 {
+            print("   → White")
             return .white
         }
         
-        // Light Yellow 2 - typically RGB(255, 242, 204) = (1.0, 0.95, 0.8)
-        if red > 0.95 && green > 0.90 && blue > 0.75 && blue < 0.85 {
+        // Light Yellow 2 - RGB(255, 242, 204) = (1.0, 0.95, 0.8)
+        if red > 0.9 && green > 0.85 && blue > 0.65 && blue < 0.9 {
+            print("   → Yellow Group")
             return .yellowGroup
         }
         
-        // Light Cornflower Blue 2 - typically RGB(207, 226, 243) = (0.81, 0.89, 0.95)
-        if blue > 0.90 && green > 0.85 && red > 0.75 && red < 0.85 {
+        // Light Cornflower Blue 2 - RGB(207, 226, 243) = (0.81, 0.89, 0.95)
+        if blue > 0.85 && green > 0.80 && red > 0.70 && red < 0.90 {
+            print("   → Blue Group")
             return .blueGroup
         }
         
-        // Light Red 3 - typically RGB(244, 204, 204) = (0.96, 0.8, 0.8)
-        if red > 0.90 && green > 0.75 && green < 0.85 && blue > 0.75 && blue < 0.85 {
-            return .purpleGroup  // Using purpleGroup for red background
+        // Light Red 3 - RGB(244, 204, 204) = (0.96, 0.8, 0.8)
+        if red > 0.85 && green > 0.70 && green < 0.90 && blue > 0.70 && blue < 0.90 {
+            print("   → Purple Group (red bg)")
+            return .purpleGroup
         }
         
-        // Light Blue 3 - typically RGB(217, 234, 211) = (0.85, 0.92, 0.83)
-        if green > 0.88 && red > 0.80 && red < 0.88 && blue > 0.78 && blue < 0.88 {
+        // Light Green 3 - RGB(217, 234, 211) = (0.85, 0.92, 0.83)
+        if green > 0.85 && red > 0.75 && red < 0.92 && blue > 0.75 && blue < 0.90 {
+            print("   → Green Group")
             return .greenGroup
         }
         
-        // Light gray background
-        if red > 0.8 && green > 0.8 && blue > 0.8 && red < 0.95 {
-            return .grayGroup
+        // Light gray background - RGB(217, 217, 217) ≈ (0.85, 0.85, 0.85)
+        if red > 0.75 && red < 0.95 && green > 0.75 && green < 0.95 && blue > 0.75 && blue < 0.95 {
+            let diff = abs(red - green) + abs(green - blue) + abs(blue - red)
+            if diff < 0.1 {  // All three values are close together = gray
+                print("   → Gray Group")
+                return .grayGroup
+            }
         }
         
         // Fallback
-        print("⚠️ Unrecognized color - defaulting to white")
+        print("   → Unrecognized, defaulting to white")
         return .white
     }
     
