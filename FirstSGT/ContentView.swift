@@ -98,6 +98,8 @@ enum UndoAction {
 
 struct ContentView: View {
     @State private var refreshTimer: Timer?
+    @State private var selectedCadetForStatus: Cadet?
+    @State private var showStatusPicker = false
 
     @State private var allSheetNames: [String] = []
     @State private var sheetsWithIds: [(name: String, sheetId: Int)] = []
@@ -157,6 +159,10 @@ struct ContentView: View {
             RoundedRectangle(cornerRadius: 16)
                 .stroke(cadet.statusColor.borderColor, lineWidth: cadet.statusColor == .gray ? 0 : 1.5)
         )
+        .onTapGesture {
+            selectedCadetForStatus = cadet
+            showStatusPicker = true
+        }
         .onLongPressGesture {
             Task {
                 await fetchCommentForCadet(cadet)
@@ -261,6 +267,92 @@ struct ContentView: View {
         } message: {
             Text(commentText ?? "No comment")
         }
+        .confirmationDialog(
+            "Mark \(selectedCadetForStatus?.lastName ?? "Cadet")",
+            isPresented: $showStatusPicker,
+            titleVisibility: .visible
+        ) {
+            Button("Present (P)") {
+                if let cadet = selectedCadetForStatus {
+                    markWithStatus(cadet, status: "P")
+                }
+            }
+            Button("Unexcused Absence (UA)", role: .destructive) {
+                if let cadet = selectedCadetForStatus {
+                    markWithStatus(cadet, status: "UA")
+                }
+            }
+            
+            // Blue excuses
+            Button("E (other)") {
+                if let cadet = selectedCadetForStatus {
+                    markWithStatus(cadet, status: "E (other)")
+                }
+            }
+            Button("E (Special Unit)") {
+                if let cadet = selectedCadetForStatus {
+                    markWithStatus(cadet, status: "E (Special Unit)")
+                }
+            }
+            Button("E (Class)") {
+                if let cadet = selectedCadetForStatus {
+                    markWithStatus(cadet, status: "E (Class)")
+                }
+            }
+            Button("E (Work)") {
+                if let cadet = selectedCadetForStatus {
+                    markWithStatus(cadet, status: "E (Work)")
+                }
+            }
+            Button("E (religious)") {
+                if let cadet = selectedCadetForStatus {
+                    markWithStatus(cadet, status: "E (religious)")
+                }
+            }
+            Button("E (Tutoring/SI)") {
+                if let cadet = selectedCadetForStatus {
+                    markWithStatus(cadet, status: "E (Tutoring/SI)")
+                }
+            }
+            
+            // Yellow excuses
+            Button("E (t-other)") {
+                if let cadet = selectedCadetForStatus {
+                    markWithStatus(cadet, status: "E (t-other)")
+                }
+            }
+            Button("E (Event)") {
+                if let cadet = selectedCadetForStatus {
+                    markWithStatus(cadet, status: "E (Event)")
+                }
+            }
+            Button("E (bag/refocus)") {
+                if let cadet = selectedCadetForStatus {
+                    markWithStatus(cadet, status: "E (bag/refocus)")
+                }
+            }
+            Button("E (Sick)") {
+                if let cadet = selectedCadetForStatus {
+                    markWithStatus(cadet, status: "E (Sick)")
+                }
+            }
+            Button("E (out of town)") {
+                if let cadet = selectedCadetForStatus {
+                    markWithStatus(cadet, status: "E (out of town)")
+                }
+            }
+            
+            // Purple
+            Button("ROTC") {
+                if let cadet = selectedCadetForStatus {
+                    markWithStatus(cadet, status: "ROTC")
+                }
+            }
+            
+            Button("Cancel", role: .cancel) {
+                selectedCadetForStatus = nil
+            }
+        }
     }
     
     // MARK: - Header View
@@ -349,7 +441,8 @@ struct ContentView: View {
     }
 
     private func openInGoogleSheets() {
-        let sheetURL = "https://docs.google.com/spreadsheets/d/1ugnpvlLtHRJ2qsiS4VxWjdtU8wSJEXKin1LBQdY_C2I/edit#gid=0"
+        let spreadsheetId = "1Dypmism-aeFhn-gpgnvlewHoIN0W-ajUbtqzHVW7cTE"
+        let sheetURL = "https://docs.google.com/spreadsheets/d/\(spreadsheetId)/edit#gid=0"
         if let url = URL(string: sheetURL) {
             UIApplication.shared.open(url)
         }
@@ -392,7 +485,45 @@ struct ContentView: View {
             .padding()
         }
     }
-    
+    private func markWithStatus(_ cadet: Cadet, status: String) {
+        guard let slot = selectedSlot else { return }
+        
+        undoStack.append(.markPresent(cadet: cadet, previousValue: cadet.value))
+        
+        // Remove from list if marked P or UA (they're "done")
+        if status == "P" || status == "UA" {
+            cadets.removeAll { $0 == cadet }
+        } else {
+            // Update the cadet's status in place
+            if let index = cadets.firstIndex(of: cadet) {
+                // We need to reload to get the updated status color
+            }
+        }
+        
+        let statusEmoji = status == "P" ? "✅" : (status == "UA" ? "❌" : "📝")
+        showToast("\(statusEmoji) Marked \(cadet.lastName) as \(status)")
+        
+        Task {
+            do {
+                let colLetter = await SheetsService.shared.columnLetter(for: slot.columnIndex)
+                let range = "\(selectedSheet)!\(colLetter)\(cadet.row)"
+                try await SheetsService.shared.write(range: range, values: [[status]])
+                
+                // Refresh to show updated status if not removed
+                if status != "P" && status != "UA" {
+                    await refreshCadetsQuietly()
+                }
+            } catch {
+                await MainActor.run {
+                    undoStack.removeLast()
+                    if status == "P" || status == "UA" {
+                        cadets.append(cadet)
+                    }
+                    showToast("❌ Failed to mark \(cadet.lastName)")
+                }
+            }
+        }
+    }
     private func startAutoRefresh() {
         refreshTimer?.invalidate()
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 8.0, repeats: true) { _ in
