@@ -573,34 +573,7 @@ struct ContentView: View {
         errorMessage = nil
         
         do {
-            // Force refresh sheet names (bypass cache)
-            sheetsWithIds = try await SheetsService.shared.fetchSheetNamesWithIds(forceRefresh: true)
-            allSheetNames = sheetsWithIds
-                .map { $0.name }
-                .filter { $0.contains("-") && $0.contains("/") }
-            
-            // Re-check which week we should be on
-            let (autoSelected, _) = autoSelectSheetOrCreate()
-            if let autoSelected = autoSelected {
-                selectedSheet = autoSelected
-            }
-            
-            guard !selectedSheet.isEmpty else {
-                throw NSError(domain: "", code: 0, userInfo: [NSLocalizedDescriptionKey: "No sheets found"])
-            }
-            
-            // Reload slots and re-pick today's slot
-            let headers = try await SheetsService.shared.fetchHeaderRows(sheet: selectedSheet)
-            let row2 = headers.count > 1 ? headers[1] : []
-            let row3 = headers.count > 2 ? headers[2] : []
-            
-            await MainActor.run {
-                allSlots = buildColumnMap(dayRow: row2, slotRow: row3)
-                todaySlots = filterTodaySlots()
-                selectedSlot = autoSelectSlot()
-            }
-            
-            // Reload cadets
+            // Just reload cadets for the currently selected sheet and slot
             await loadCadets()
             
             await MainActor.run {
@@ -1160,7 +1133,7 @@ struct ContentView: View {
         let currentYear = calendar.component(.year, from: Date())
         
         guard let startMonthDay = formatter.date(from: parts[0].trimmingCharacters(in: .whitespaces)),
-              let endMonthDay = formatter.date(from: parts[1].trimmingCharacters(in: .whitespaces))
+            let endMonthDay = formatter.date(from: parts[1].trimmingCharacters(in: .whitespaces))
         else { return nil }
         
         var startComponents = calendar.dateComponents([.month, .day], from: startMonthDay)
@@ -1169,8 +1142,18 @@ struct ContentView: View {
         startComponents.year = currentYear
         endComponents.year = currentYear
         
+        // Set start to beginning of day (00:00:00)
+        startComponents.hour = 0
+        startComponents.minute = 0
+        startComponents.second = 0
+        
+        // Set end to END of day (23:59:59) so today at any time still matches
+        endComponents.hour = 23
+        endComponents.minute = 59
+        endComponents.second = 59
+        
         guard let startDate = calendar.date(from: startComponents),
-              let endDate = calendar.date(from: endComponents)
+            let endDate = calendar.date(from: endComponents)
         else { return nil }
         
         return (startDate, endDate)
