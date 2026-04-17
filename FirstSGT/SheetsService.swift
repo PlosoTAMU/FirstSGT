@@ -50,63 +50,71 @@ actor SheetsService {
     // MARK: - Read
     
     func read(range: String) async throws -> [[String]] {
-        let token = try await GoogleAuthService.shared.getAccessToken()
+    let token = try await GoogleAuthService.shared.getAccessToken()
+    
+    // Split range into sheet name and cell reference
+    // e.g., "4/12-4/17!A1:ZZ3" → sheetName="4/12-4/17", cellRef="A1:ZZ3"
+    let parts = range.components(separatedBy: "!")
+    
+    let encodedRange: String
+    if parts.count == 2 {
+        let sheetName = parts[0]
+        let cellRef = parts[1]
         
-        // Same encoding fix as write
-        let parts = range.components(separatedBy: "!")
-        let encodedRange: String
-        
-        if parts.count == 2 {
-            guard let encodedSheetName = parts[0].addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
-                throw SheetsError.parseError
-            }
-            encodedRange = "\(encodedSheetName)!\(parts[1])"
-        } else {
-            guard let encoded = range.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
-                throw SheetsError.parseError
-            }
-            encodedRange = encoded
-        }
-        
-        let urlString = "\(baseURL)/\(spreadsheetId)/values/\(encodedRange)"
-        guard let url = URL(string: urlString) else {
+        // Encode the sheet name - this converts / to %2F
+        guard let encodedSheetName = sheetName.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-"))) else {
             throw SheetsError.parseError
         }
-        
-        var request = URLRequest(url: url)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        
-        let (data, response) = try await URLSession.shared.data(for: request)
-        
-        if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode >= 400 {
-            let rawString = String(data: data, encoding: .utf8) ?? "No response"
-            print("❌ [read] HTTP \(httpResponse.statusCode): \(rawString)")
-            throw SheetsError.readFailedWithDetails("HTTP \(httpResponse.statusCode)")
+        encodedRange = "\(encodedSheetName)!\(cellRef)"
+    } else {
+        // No ! separator, encode the whole thing
+        guard let encoded = range.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-"))) else {
+            throw SheetsError.parseError
         }
-        
-        let decoded = try JSONDecoder().decode(SheetResponse.self, from: data)
-        return decoded.values ?? []
+        encodedRange = encoded
     }
+    
+    let urlString = "\(baseURL)/\(spreadsheetId)/values/\(encodedRange)"
+    guard let url = URL(string: urlString) else {
+        print("❌ [read] Could not create URL: \(urlString)")
+        throw SheetsError.parseError
+    }
+    
+    print("📖 [read] GET \(urlString)")
+    
+    var request = URLRequest(url: url)
+    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+    
+    let (data, response) = try await URLSession.shared.data(for: request)
+    
+    if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode >= 400 {
+        let rawString = String(data: data, encoding: .utf8) ?? "No response"
+        print("❌ [read] HTTP \(httpResponse.statusCode): \(rawString.prefix(300))")
+        throw SheetsError.parseError
+    }
+    
+    let decoded = try JSONDecoder().decode(SheetResponse.self, from: data)
+    return decoded.values ?? []
+}
     
     // MARK: - Write
     
     func write(range: String, values: [[String]]) async throws {
         let token = try await GoogleAuthService.shared.getAccessToken()
         
-        // Encode the range properly - sheet names can have / in them like "5/25-5/30"
-        // We need to encode just the sheet name part, not the whole thing
+        // Split range into sheet name and cell reference
         let parts = range.components(separatedBy: "!")
         guard parts.count == 2 else {
             print("❌ [write] Invalid range format: \(range)")
-            throw SheetsError.writeFailedWithDetails("Invalid range format: \(range)")
+            throw SheetsError.writeFailed
         }
         
         let sheetName = parts[0]
         let cellRef = parts[1]
         
-        // URL-encode the sheet name (this handles / becoming %2F)
-        guard let encodedSheetName = sheetName.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
-            throw SheetsError.writeFailedWithDetails("Could not encode sheet name: \(sheetName)")
+        // Encode the sheet name - converts / to %2F, spaces to %20, etc.
+        guard let encodedSheetName = sheetName.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-"))) else {
+            throw SheetsError.writeFailed
         }
         
         let encodedRange = "\(encodedSheetName)!\(cellRef)"
@@ -114,7 +122,7 @@ actor SheetsService {
         
         guard let url = URL(string: urlString) else {
             print("❌ [write] Could not create URL: \(urlString)")
-            throw SheetsError.writeFailedWithDetails("Invalid URL")
+            throw SheetsError.writeFailed
         }
         
         var request = URLRequest(url: url)
@@ -130,41 +138,14 @@ actor SheetsService {
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         
-        print("📤 [write] PUT to: \(urlString)")
-        print("📤 [write] Range: \(range), Values: \(values)")
+        print("📤 [write] PUT \(urlString)")
         
         let (data, response) = try await URLSession.shared.data(for: request)
         
-        if let httpResponse = response as? HTTPURLResponse {
-            print("📥 [write] HTTP Status: \(httpResponse.statusCode)")
-            
-            if httpResponse.statusCode >= 400 {
-                let rawString = String(data: data, encoding: .utf8) ?? "No response body"
-                print("❌ [write] Error response: \(rawString)")
-                
-                // Try to extract Google's specific error message
-                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                let error = json["error"] as? [String: Any],
-                let message = error["message"] as? String {
-                    throw SheetsError.writeFailedWithDetails("HTTP \(httpResponse.statusCode): \(message)")
-                }
-                
-                // Provide common error explanations
-                switch httpResponse.statusCode {
-                case 401:
-                    throw SheetsError.writeFailedWithDetails("Authentication expired - restart app")
-                case 403:
-                    throw SheetsError.writeFailedWithDetails("Permission denied - check service account access")
-                case 404:
-                    throw SheetsError.writeFailedWithDetails("Sheet or range not found: \(range)")
-                case 429:
-                    throw SheetsError.writeFailedWithDetails("Rate limited - too many requests, wait a moment")
-                case 500, 502, 503:
-                    throw SheetsError.writeFailedWithDetails("Google Sheets server error - try again")
-                default:
-                    throw SheetsError.writeFailedWithDetails("HTTP \(httpResponse.statusCode): \(rawString.prefix(200))")
-                }
-            }
+        if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode >= 400 {
+            let rawString = String(data: data, encoding: .utf8) ?? "No response body"
+            print("❌ [write] HTTP \(httpResponse.statusCode): \(rawString)")
+            throw SheetsError.writeFailed
         }
         
         print("✅ [write] Success")
@@ -221,9 +202,7 @@ actor SheetsService {
     ) {
         let token = try await GoogleAuthService.shared.getAccessToken()
         
-        var allowedCharacters = CharacterSet.urlQueryAllowed
-        allowedCharacters.remove("/")
-        guard let encodedSheet = sheet.addingPercentEncoding(withAllowedCharacters: allowedCharacters) else {
+        guard let encodedSheet = sheet.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-"))) else {
             throw SheetsError.parseError
         }
         
@@ -312,9 +291,7 @@ actor SheetsService {
     func fetchCellComment(sheet: String, column: Int, row: Int) async throws -> String? {
         let token = try await GoogleAuthService.shared.getAccessToken()
         
-        var allowedCharacters = CharacterSet.urlQueryAllowed
-        allowedCharacters.remove("/")
-        guard let encodedSheet = sheet.addingPercentEncoding(withAllowedCharacters: allowedCharacters) else {
+        guard let encodedSheet = sheet.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-"))) else {
             throw SheetsError.parseError
         }
         
