@@ -531,24 +531,23 @@ struct ContentView: View {
         // Get the new status color
         let newStatusColor = StatusColor.from(value: status)
         
-        if newStatusColor == nil {
-            // Only P gets filtered out (status returns nil)
-            cadets.removeAll { $0 == cadet }
-        } else {
-            // For ALL other statuses (UA, ROTC, excuses, etc), update in-place
-            if let index = cadets.firstIndex(where: { $0.row == cadet.row }) {
-                let updatedCadet = Cadet(
-                    name: cadet.name,
-                    lastName: cadet.lastName,
-                    searchableNames: cadet.searchableNames,
-                    value: status,
-                    row: cadet.row,
-                    statusColor: newStatusColor!,
-                    groupColor: cadet.groupColor
-                )
-                cadets[index] = updatedCadet
-            }
+        // ALWAYS remove the old cadet first
+        cadets.removeAll { $0.row == cadet.row }
+        
+        // If the new status has a color (not P), add the updated cadet back
+        if let newColor = newStatusColor {
+            let updatedCadet = Cadet(
+                name: cadet.name,
+                lastName: cadet.lastName,
+                searchableNames: cadet.searchableNames,
+                value: status,
+                row: cadet.row,
+                statusColor: newColor,
+                groupColor: cadet.groupColor
+            )
+            cadets.append(updatedCadet)
         }
+        // If newStatusColor is nil (P), the cadet stays removed
         
         let statusEmoji: String
         switch status {
@@ -565,16 +564,12 @@ struct ContentView: View {
                 let colLetter = await SheetsService.shared.columnLetter(for: slot.columnIndex)
                 let range = "\(selectedSheet)!\(colLetter)\(cadet.row)"
                 try await SheetsService.shared.write(range: range, values: [[status]])
-                
             } catch {
                 await MainActor.run {
                     undoStack.removeLast()
                     // Restore original cadet on failure
-                    if let index = cadets.firstIndex(where: { $0.row == cadet.row }) {
-                        cadets[index] = cadet
-                    } else {
-                        cadets.append(cadet)
-                    }
+                    cadets.removeAll { $0.row == cadet.row }
+                    cadets.append(cadet)
                     showToast("❌ Failed to mark \(cadet.lastName)")
                 }
             }
@@ -584,11 +579,18 @@ struct ContentView: View {
     // MARK: - Full Refresh
 
     private func fullRefresh() async {
-        isLoading = true
-        errorMessage = nil
+        // Stop auto-refresh during reload
+        stopAutoRefresh()
+        
+        // Clear all state
+        await MainActor.run {
+            isLoading = true
+            errorMessage = nil
+            cadets = []
+            stats = []
+        }
         
         do {
-            // Reload cadets for the currently selected sheet and slot
             guard let slot = selectedSlot, !selectedSheet.isEmpty else {
                 throw NSError(domain: "", code: 0, userInfo: [NSLocalizedDescriptionKey: "No slot selected"])
             }
@@ -645,6 +647,9 @@ struct ContentView: View {
         await MainActor.run {
             isLoading = false
         }
+        
+        // Restart auto-refresh
+        startAutoRefresh()
     }
 
     private func startAutoRefresh() {
