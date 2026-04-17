@@ -66,17 +66,18 @@ enum StatusColor: Int, Comparable {
         if lower.hasPrefix("e (") {
             // YELLOW excuses (explicitly listed)
             if lower.contains("t-other") ||
-               lower.contains("event") ||
-               lower.contains("bag") ||
-               lower.contains("refocus") ||
-               lower.contains("sick") ||
-               lower.contains("out of town") {
+            lower.contains("event") ||
+            lower.contains("bag") ||
+            lower.contains("refocus") ||
+            lower.contains("sick") ||
+            lower.contains("out of town") {
                 return .yellow
             }
             // BLUE excuses (everything else)
             return .blue
         }
         
+        // TBD and anything else shows as gray
         return .gray
     }
 }
@@ -279,96 +280,27 @@ struct ContentView: View {
         .sheet(isPresented: $showStatsSheet) {
             statsView
         }
+        .sheet(isPresented: $showStatusPicker) {
+            if let cadet = selectedCadetForStatus {
+                StatusPickerView(
+                    cadet: cadet,
+                    onSelect: { status in
+                        markWithStatus(cadet, status: status)
+                        showStatusPicker = false
+                        selectedCadetForStatus = nil
+                    },
+                    onCancel: {
+                        showStatusPicker = false
+                        selectedCadetForStatus = nil
+                    }
+                )
+                .presentationDetents([.medium, .large])
+            }
+        }
         .alert("\(selectedCadetForComment?.lastName ?? "Cadet")", isPresented: $showCommentAlert) {
             Button("OK") { }
         } message: {
             Text(commentText ?? "No comment")
-        }
-        .confirmationDialog(
-            "Mark \(selectedCadetForStatus?.lastName ?? "Cadet")",
-            isPresented: $showStatusPicker,
-            titleVisibility: .visible
-        ) {
-            Button("Present (P)") {
-                if let cadet = selectedCadetForStatus {
-                    markWithStatus(cadet, status: "P")
-                }
-            }
-            Button("Unexcused Absence (UA)", role: .destructive) {
-                if let cadet = selectedCadetForStatus {
-                    markWithStatus(cadet, status: "UA")
-                }
-            }
-            
-            // Blue excuses
-            Button("E (other)") {
-                if let cadet = selectedCadetForStatus {
-                    markWithStatus(cadet, status: "E (other)")
-                }
-            }
-            Button("E (Special Unit)") {
-                if let cadet = selectedCadetForStatus {
-                    markWithStatus(cadet, status: "E (Special Unit)")
-                }
-            }
-            Button("E (Class)") {
-                if let cadet = selectedCadetForStatus {
-                    markWithStatus(cadet, status: "E (Class)")
-                }
-            }
-            Button("E (Work)") {
-                if let cadet = selectedCadetForStatus {
-                    markWithStatus(cadet, status: "E (Work)")
-                }
-            }
-            Button("E (religious)") {
-                if let cadet = selectedCadetForStatus {
-                    markWithStatus(cadet, status: "E (religious)")
-                }
-            }
-            Button("E (Tutoring/SI)") {
-                if let cadet = selectedCadetForStatus {
-                    markWithStatus(cadet, status: "E (Tutoring/SI)")
-                }
-            }
-            
-            // Yellow excuses
-            Button("E (t-other)") {
-                if let cadet = selectedCadetForStatus {
-                    markWithStatus(cadet, status: "E (t-other)")
-                }
-            }
-            Button("E (Event)") {
-                if let cadet = selectedCadetForStatus {
-                    markWithStatus(cadet, status: "E (Event)")
-                }
-            }
-            Button("E (bag/refocus)") {
-                if let cadet = selectedCadetForStatus {
-                    markWithStatus(cadet, status: "E (bag/refocus)")
-                }
-            }
-            Button("E (Sick)") {
-                if let cadet = selectedCadetForStatus {
-                    markWithStatus(cadet, status: "E (Sick)")
-                }
-            }
-            Button("E (out of town)") {
-                if let cadet = selectedCadetForStatus {
-                    markWithStatus(cadet, status: "E (out of town)")
-                }
-            }
-            
-            // Purple
-            Button("ROTC") {
-                if let cadet = selectedCadetForStatus {
-                    markWithStatus(cadet, status: "ROTC")
-                }
-            }
-            
-            Button("Cancel", role: .cancel) {
-                selectedCadetForStatus = nil
-            }
         }
     }
     
@@ -531,10 +463,10 @@ struct ContentView: View {
         // Get the new status color
         let newStatusColor = StatusColor.from(value: status)
         
-        // ALWAYS remove the old cadet first
+        // Remove old cadet first (forces SwiftUI to see the change)
         cadets.removeAll { $0.row == cadet.row }
         
-        // If the new status has a color (not P), add the updated cadet back
+        // If not P (which returns nil), add back with new status
         if let newColor = newStatusColor {
             let updatedCadet = Cadet(
                 name: cadet.name,
@@ -547,12 +479,12 @@ struct ContentView: View {
             )
             cadets.append(updatedCadet)
         }
-        // If newStatusColor is nil (P), the cadet stays removed
         
         let statusEmoji: String
         switch status {
         case "P": statusEmoji = "✅"
         case "UA": statusEmoji = "❌"
+        case "TBD": statusEmoji = "⬜"
         case "ROTC": statusEmoji = "🟣"
         default: statusEmoji = "📝"
         }
@@ -740,10 +672,10 @@ struct ContentView: View {
         
         switch color {
         case .red:
-            return "UA"  // Show UA badge
+            return "UA"
             
         case .purple:
-            return nil  // ROTC shows no code
+            return nil
             
         case .blue:
             if lower.contains("special") { return "U" }
@@ -1293,6 +1225,114 @@ struct ContentView: View {
         }
         
         return todaySlots.first
+    }
+}
+
+// MARK: - Custom Status Picker
+
+struct StatusPickerView: View {
+    let cadet: Cadet
+    let onSelect: (String) -> Void
+    let onCancel: () -> Void
+    
+    var body: some View {
+        NavigationView {
+            List {
+                // Present
+                Section {
+                    StatusRow(
+                        title: "Present",
+                        code: "P",
+                        color: .green,
+                        onTap: { onSelect("P") }
+                    )
+                }
+                
+                // TBD (gray)
+                Section(header: Text("Reset")) {
+                    StatusRow(
+                        title: "TBD",
+                        code: nil,
+                        color: Color(.systemGray4),
+                        onTap: { onSelect("TBD") }
+                    )
+                }
+                
+                // UA (red)
+                Section(header: Text("Unexcused")) {
+                    StatusRow(
+                        title: "Unexcused Absence",
+                        code: "UA",
+                        color: .red,
+                        onTap: { onSelect("UA") }
+                    )
+                }
+                
+                // Blue excuses
+                Section(header: Text("Excused (Blue)")) {
+                    StatusRow(title: "E (other)", code: nil, color: .blue) { onSelect("E (other)") }
+                    StatusRow(title: "E (Special Unit)", code: "U", color: .blue) { onSelect("E (Special Unit)") }
+                    StatusRow(title: "E (Class)", code: "C", color: .blue) { onSelect("E (Class)") }
+                    StatusRow(title: "E (Work)", code: "W", color: .blue) { onSelect("E (Work)") }
+                    StatusRow(title: "E (religious)", code: "R", color: .blue) { onSelect("E (religious)") }
+                    StatusRow(title: "E (Tutoring/SI)", code: "T", color: .blue) { onSelect("E (Tutoring/SI)") }
+                }
+                
+                // Yellow excuses
+                Section(header: Text("Excused (Yellow)")) {
+                    StatusRow(title: "E (t-other)", code: nil, color: .yellow, textColor: .black) { onSelect("E (t-other)") }
+                    StatusRow(title: "E (Event)", code: "E", color: .yellow, textColor: .black) { onSelect("E (Event)") }
+                    StatusRow(title: "E (bag/refocus)", code: "B/R", color: .yellow, textColor: .black) { onSelect("E (bag/refocus)") }
+                    StatusRow(title: "E (Sick)", code: "S", color: .yellow, textColor: .black) { onSelect("E (Sick)") }
+                    StatusRow(title: "E (out of town)", code: "O", color: .yellow, textColor: .black) { onSelect("E (out of town)") }
+                }
+                
+                // Purple (ROTC)
+                Section(header: Text("Other")) {
+                    StatusRow(title: "ROTC", code: nil, color: .purple) { onSelect("ROTC") }
+                }
+            }
+            .navigationTitle("Mark \(cadet.lastName)")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Cancel") { onCancel() }
+                }
+            }
+        }
+    }
+}
+
+struct StatusRow: View {
+    let title: String
+    let code: String?
+    let color: Color
+    var textColor: Color = .white
+    let onTap: () -> Void
+    
+    var body: some View {
+        Button(action: onTap) {
+            HStack {
+                // Color indicator bubble
+                HStack(spacing: 4) {
+                    Text(code ?? "")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(textColor)
+                }
+                .frame(width: 36, height: 24)
+                .background(color.opacity(0.8))
+                .cornerRadius(12)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(color, lineWidth: 1.5)
+                )
+                
+                Text(title)
+                    .foregroundColor(.primary)
+                
+                Spacer()
+            }
+        }
     }
 }
 
