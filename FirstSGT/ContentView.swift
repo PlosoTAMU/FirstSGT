@@ -237,6 +237,10 @@ struct ContentView: View {
                     .padding(.bottom, 8)
             }
         }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            isInputFocused = false
+        }
         .task {
             await loadData()
             startAutoRefresh()
@@ -373,6 +377,16 @@ struct ContentView: View {
                     .foregroundColor(.green)
             }
             
+            // NEW: Refresh button
+            Button(action: {
+                Task { await fullRefresh() }
+            }) {
+                Image(systemName: "arrow.clockwise.circle.fill")
+                    .font(.title2)
+                    .foregroundColor(.blue)
+            }
+            .disabled(isLoading)
+            
             Spacer()
             
             VStack(spacing: 4) {
@@ -501,9 +515,25 @@ struct ContentView: View {
         
         undoStack.append(.markPresent(cadet: cadet, previousValue: cadet.value))
         
-        // Remove from list if marked P or UA (they're "done")
+        // Optimistically update local state for ALL statuses
         if status == "P" || status == "UA" {
+            // These get filtered out entirely (StatusColor.from returns nil)
             cadets.removeAll { $0 == cadet }
+        } else {
+            // For excuses/ROTC, update the cadet in-place with new status
+            if let index = cadets.firstIndex(where: { $0 == cadet }) {
+                let newStatusColor = StatusColor.from(value: status) ?? .gray
+                let updatedCadet = Cadet(
+                    name: cadet.name,
+                    lastName: cadet.lastName,
+                    searchableNames: cadet.searchableNames,
+                    value: status,
+                    row: cadet.row,
+                    statusColor: newStatusColor,
+                    groupColor: cadet.groupColor
+                )
+                cadets[index] = updatedCadet
+            }
         }
         
         let statusEmoji = status == "P" ? "✅" : (status == "UA" ? "❌" : "📝")
@@ -515,13 +545,19 @@ struct ContentView: View {
                 let range = "\(selectedSheet)!\(colLetter)\(cadet.row)"
                 try await SheetsService.shared.write(range: range, values: [[status]])
                 
-                // Always refresh after marking to show updated status color
+                // Small delay to let Google Sheets propagate the write
+                try await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
+                
+                // Refresh from server to get ground truth
                 await loadCadets()
                 
             } catch {
                 await MainActor.run {
                     undoStack.removeLast()
-                    if status == "P" || status == "UA" {
+                    // Restore original cadet on failure
+                    if let index = cadets.firstIndex(where: { $0.row == cadet.row }) {
+                        cadets[index] = cadet
+                    } else {
                         cadets.append(cadet)
                     }
                     showToast("❌ Failed to mark \(cadet.lastName)")
@@ -530,7 +566,56 @@ struct ContentView: View {
         }
     }
 
+    // MARK: - Full Refresh
 
+    private func fullRefresh() async {
+        isLoading = true
+        errorMessage = nil
+        
+        do {
+            // Force refresh sheet names (bypass cache)
+            sheetsWithIds = try await SheetsService.shared.fetchSheetNamesWithIds(forceRefresh: true)
+            allSheetNames = sheetsWithIds
+                .map { $0.name }
+                .filter { $0.contains("-") && $0.contains("/") }
+            
+            // Re-check which week we should be on
+            let (autoSelected, _) = autoSelectSheetOrCreate()
+            if let autoSelected = autoSelected {
+                selectedSheet = autoSelected
+            }
+            
+            guard !selectedSheet.isEmpty else {
+                throw NSError(domain: "", code: 0, userInfo: [NSLocalizedDescriptionKey: "No sheets found"])
+            }
+            
+            // Reload slots and re-pick today's slot
+            let headers = try await SheetsService.shared.fetchHeaderRows(sheet: selectedSheet)
+            let row2 = headers.count > 1 ? headers[1] : []
+            let row3 = headers.count > 2 ? headers[2] : []
+            
+            await MainActor.run {
+                allSlots = buildColumnMap(dayRow: row2, slotRow: row3)
+                todaySlots = filterTodaySlots()
+                selectedSlot = autoSelectSlot()
+            }
+            
+            // Reload cadets
+            await loadCadets()
+            
+            await MainActor.run {
+                showToast("✅ Refreshed")
+            }
+        } catch {
+            await MainActor.run {
+                errorMessage = error.localizedDescription
+            }
+        }
+        
+        await MainActor.run {
+            isLoading = false
+        }
+    }
 
     private func startAutoRefresh() {
         refreshTimer?.invalidate()
@@ -547,7 +632,7 @@ struct ContentView: View {
     }
 
     private func refreshCadetsQuietly() async {
-        guard let slot = selectedSlot else { return }
+        guard let slot = selectedSlot, !selectedSheet.isEmpty else { return }
         
         do {
             let data = try await SheetsService.shared.fetchNamesValuesColorsAndStats(
@@ -581,11 +666,17 @@ struct ContentView: View {
                 )
             }
             
+            let newStats = data.stats.map { StatItem(label: $0.label, value: $0.value) }
+            
             await MainActor.run {
-                // Only update if different to avoid UI flicker
+                // Update if data changed
                 if newCadets.map({ $0.row }) != cadets.map({ $0.row }) ||
                 newCadets.map({ $0.value }) != cadets.map({ $0.value }) {
                     cadets = newCadets
+                }
+                // Also refresh stats
+                if newStats.map({ $0.value }) != stats.map({ $0.value }) {
+                    stats = newStats
                 }
             }
         } catch {
