@@ -67,7 +67,22 @@ actor SheetsService {
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         
-        let (data, _) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        // Check for HTTP errors before decoding
+        if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode >= 400 {
+            let rawString = String(data: data, encoding: .utf8) ?? "No response body"
+            print("❌ [read] HTTP \(httpResponse.statusCode) for range '\(range)': \(rawString)")
+            
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let error = json["error"] as? [String: Any],
+            let message = error["message"] as? String {
+                throw SheetsError.writeFailedWithDetails("Read HTTP \(httpResponse.statusCode): \(message)")
+            }
+            
+            throw SheetsError.writeFailedWithDetails("Read HTTP \(httpResponse.statusCode)")
+        }
+        
         let decoded = try JSONDecoder().decode(SheetResponse.self, from: data)
         return decoded.values ?? []
     }
@@ -104,37 +119,21 @@ actor SheetsService {
         let (data, response) = try await URLSession.shared.data(for: request)
         
         if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode >= 400 {
-            if let rawString = String(data: data, encoding: .utf8) {
-                print("❌ [write] Error response: \(rawString)")
+            let rawString = String(data: data, encoding: .utf8) ?? "No response body"
+            print("❌ [write] HTTP \(httpResponse.statusCode) for range '\(range)': \(rawString)")
+            
+            // Try to extract Google's error message
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let error = json["error"] as? [String: Any],
+            let message = error["message"] as? String {
+                throw SheetsError.writeFailedWithDetails("HTTP \(httpResponse.statusCode): \(message)")
             }
-            throw SheetsError.writeFailed
+            
+            throw SheetsError.writeFailedWithDetails("HTTP \(httpResponse.statusCode): \(rawString.prefix(200))")
         }
     }
     
-    // MARK: - Fetch Sheet Names with IDs
-    
-    func fetchSheetNamesWithIds() async throws -> [(name: String, sheetId: Int)] {
-        let token = try await GoogleAuthService.shared.getAccessToken()
-        let url = URL(string: "\(baseURL)/\(spreadsheetId)")!
-        
-        var request = URLRequest(url: url)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        
-        let (data, _) = try await URLSession.shared.data(for: request)
-        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        
-        guard let sheets = json?["sheets"] as? [[String: Any]] else {
-            throw SheetsError.parseError
-        }
-        
-        return sheets.compactMap { sheet in
-            guard let props = sheet["properties"] as? [String: Any],
-                  let title = props["title"] as? String,
-                  let sheetId = props["sheetId"] as? Int
-            else { return nil }
-            return (name: title, sheetId: sheetId)
-        }
-    }
+
     
     func fetchSheetNames() async throws -> [String] {
         let sheetsWithIds = try await fetchSheetNamesWithIds()
@@ -406,9 +405,21 @@ actor SheetsService {
         let values: [[String]]?
     }
     
-    enum SheetsError: Error {
+    enum SheetsError: LocalizedError {
         case parseError
         case writeFailed
+        case writeFailedWithDetails(String)
+        
+        var errorDescription: String? {
+            switch self {
+            case .parseError:
+                return "Failed to parse Sheets response"
+            case .writeFailed:
+                return "Write to Google Sheets failed (unknown reason)"
+            case .writeFailedWithDetails(let details):
+                return "Write failed: \(details)"
+            }
+        }
     }
     
     enum GroupColor: Int, Comparable {
