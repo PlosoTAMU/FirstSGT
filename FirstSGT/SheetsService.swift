@@ -52,11 +52,20 @@ actor SheetsService {
     func read(range: String) async throws -> [[String]] {
         let token = try await GoogleAuthService.shared.getAccessToken()
         
-        var allowedCharacters = CharacterSet.urlPathAllowed
-        allowedCharacters.remove("/")
+        // Same encoding fix as write
+        let parts = range.components(separatedBy: "!")
+        let encodedRange: String
         
-        guard let encodedRange = range.addingPercentEncoding(withAllowedCharacters: allowedCharacters) else {
-            throw SheetsError.parseError
+        if parts.count == 2 {
+            guard let encodedSheetName = parts[0].addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
+                throw SheetsError.parseError
+            }
+            encodedRange = "\(encodedSheetName)!\(parts[1])"
+        } else {
+            guard let encoded = range.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
+                throw SheetsError.parseError
+            }
+            encodedRange = encoded
         }
         
         let urlString = "\(baseURL)/\(spreadsheetId)/values/\(encodedRange)"
@@ -69,18 +78,10 @@ actor SheetsService {
         
         let (data, response) = try await URLSession.shared.data(for: request)
         
-        // Check for HTTP errors before decoding
         if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode >= 400 {
-            let rawString = String(data: data, encoding: .utf8) ?? "No response body"
-            print("❌ [read] HTTP \(httpResponse.statusCode) for range '\(range)': \(rawString)")
-            
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let error = json["error"] as? [String: Any],
-            let message = error["message"] as? String {
-                throw SheetsError.writeFailedWithDetails("Read HTTP \(httpResponse.statusCode): \(message)")
-            }
-            
-            throw SheetsError.writeFailedWithDetails("Read HTTP \(httpResponse.statusCode)")
+            let rawString = String(data: data, encoding: .utf8) ?? "No response"
+            print("❌ [read] HTTP \(httpResponse.statusCode): \(rawString)")
+            throw SheetsError.readFailedWithDetails("HTTP \(httpResponse.statusCode)")
         }
         
         let decoded = try JSONDecoder().decode(SheetResponse.self, from: data)
@@ -91,69 +92,82 @@ actor SheetsService {
     
     func write(range: String, values: [[String]]) async throws {
         let token = try await GoogleAuthService.shared.getAccessToken()
-
-        // Encode the sheet name portion only, preserving the ! separator
-        // e.g. "5/25-5/30!C12" → encode "5/25-5/30" separately from "C12"
+        
+        // Encode the range properly - sheet names can have / in them like "5/25-5/30"
+        // We need to encode just the sheet name part, not the whole thing
         let parts = range.components(separatedBy: "!")
         guard parts.count == 2 else {
-            print("❌ [write] Bad range format: \(range)")
-            throw SheetsError.parseError
+            print("❌ [write] Invalid range format: \(range)")
+            throw SheetsError.writeFailedWithDetails("Invalid range format: \(range)")
         }
-
-        let sheetNamePart = parts[0]
-        let cellPart = parts[1]
-
-        guard let encodedSheetName = sheetNamePart
-            .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
-        else {
-            throw SheetsError.parseError
+        
+        let sheetName = parts[0]
+        let cellRef = parts[1]
+        
+        // URL-encode the sheet name (this handles / becoming %2F)
+        guard let encodedSheetName = sheetName.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
+            throw SheetsError.writeFailedWithDetails("Could not encode sheet name: \(sheetName)")
         }
-
-        let encodedRange = "\(encodedSheetName)!\(cellPart)"
-
+        
+        let encodedRange = "\(encodedSheetName)!\(cellRef)"
         let urlString = "\(baseURL)/\(spreadsheetId)/values/\(encodedRange)?valueInputOption=RAW"
+        
         guard let url = URL(string: urlString) else {
-            print("❌ [write] Could not form URL from: \(urlString)")
-            throw SheetsError.parseError
+            print("❌ [write] Could not create URL: \(urlString)")
+            throw SheetsError.writeFailedWithDetails("Invalid URL")
         }
-
+        
         var request = URLRequest(url: url)
         request.httpMethod = "PUT"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
-        // Body uses the ORIGINAL unencoded range — Google expects the plain name here
+        
+        // Body uses the ORIGINAL unencoded range
         let body: [String: Any] = [
             "range": range,
             "majorDimension": "ROWS",
             "values": values
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-        print("📤 [write] PUT \(urlString)")
-        print("📤 [write] body range: \(range), values: \(values)")
-
+        
+        print("📤 [write] PUT to: \(urlString)")
+        print("📤 [write] Range: \(range), Values: \(values)")
+        
         let (data, response) = try await URLSession.shared.data(for: request)
-
+        
         if let httpResponse = response as? HTTPURLResponse {
-            print("📥 [write] HTTP \(httpResponse.statusCode)")
-
+            print("📥 [write] HTTP Status: \(httpResponse.statusCode)")
+            
             if httpResponse.statusCode >= 400 {
                 let rawString = String(data: data, encoding: .utf8) ?? "No response body"
-                print("❌ [write] Error body: \(rawString)")
-
-                // Pull Google's human-readable message out of the JSON
+                print("❌ [write] Error response: \(rawString)")
+                
+                // Try to extract Google's specific error message
                 if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                let errorObj = json["error"] as? [String: Any],
-                let message = errorObj["message"] as? String {
+                let error = json["error"] as? [String: Any],
+                let message = error["message"] as? String {
                     throw SheetsError.writeFailedWithDetails("HTTP \(httpResponse.statusCode): \(message)")
                 }
-
-                throw SheetsError.writeFailedWithDetails(
-                    "HTTP \(httpResponse.statusCode): \(rawString.prefix(300))"
-                )
+                
+                // Provide common error explanations
+                switch httpResponse.statusCode {
+                case 401:
+                    throw SheetsError.writeFailedWithDetails("Authentication expired - restart app")
+                case 403:
+                    throw SheetsError.writeFailedWithDetails("Permission denied - check service account access")
+                case 404:
+                    throw SheetsError.writeFailedWithDetails("Sheet or range not found: \(range)")
+                case 429:
+                    throw SheetsError.writeFailedWithDetails("Rate limited - too many requests, wait a moment")
+                case 500, 502, 503:
+                    throw SheetsError.writeFailedWithDetails("Google Sheets server error - try again")
+                default:
+                    throw SheetsError.writeFailedWithDetails("HTTP \(httpResponse.statusCode): \(rawString.prefix(200))")
+                }
             }
         }
+        
+        print("✅ [write] Success")
     }
     
 
@@ -432,15 +446,18 @@ actor SheetsService {
         case parseError
         case writeFailed
         case writeFailedWithDetails(String)
-
+        case readFailedWithDetails(String)
+        
         var errorDescription: String? {
             switch self {
             case .parseError:
                 return "Failed to parse Sheets response"
             case .writeFailed:
-                return "Write to Google Sheets failed"
+                return "Write to Google Sheets failed (unknown reason)"
             case .writeFailedWithDetails(let details):
-                return details
+                return "Write failed: \(details)"
+            case .readFailedWithDetails(let details):
+                return "Read failed: \(details)"
             }
         }
     }
