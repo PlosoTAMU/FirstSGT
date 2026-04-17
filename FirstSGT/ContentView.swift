@@ -953,23 +953,35 @@ struct ContentView: View {
             
             let (selected, needsCreation) = autoSelectSheetOrCreate()
             
-            if needsCreation, let templateId = findTemplateSheetId() {
+            if let selected = selected {
+                // Found a matching sheet for today
+                selectedSheet = selected
+            } else if needsCreation, let templateId = findTemplateSheetId() {
+                // Try to create a new sheet, but don't fail if it doesn't work
                 let newSheetName = generateNewSheetName()
-                try await SheetsService.shared.copySheet(
-                    sourceSheetId: templateId,
-                    newTitle: newSheetName,
-                    insertAtIndex: 1
-                )
-                await MainActor.run {
-                    createdSheetName = newSheetName
-                    showSheetCreatedAlert = true
+                do {
+                    try await SheetsService.shared.copySheet(
+                        sourceSheetId: templateId,
+                        newTitle: newSheetName,
+                        insertAtIndex: 1
+                    )
+                    await MainActor.run {
+                        createdSheetName = newSheetName
+                        showSheetCreatedAlert = true
+                    }
+                    
+                    // Refresh sheet list after creation
+                    sheetsWithIds = try await SheetsService.shared.fetchSheetNamesWithIds(forceRefresh: true)
+                    allSheetNames = sheetsWithIds.map { $0.name }.filter { $0.contains("-") && $0.contains("/") }
+                    selectedSheet = newSheetName
+                } catch {
+                    // Sheet creation failed (probably already exists) - just use first available
+                    print("⚠️ Sheet creation failed: \(error.localizedDescription)")
+                    selectedSheet = allSheetNames.first ?? ""
                 }
-                
-                sheetsWithIds = try await SheetsService.shared.fetchSheetNamesWithIds()
-                allSheetNames = sheetsWithIds.map { $0.name }.filter { $0.contains("-") && $0.contains("/") }
-                selectedSheet = newSheetName
             } else {
-                selectedSheet = selected ?? allSheetNames.first ?? ""
+                // No auto-selection and no template - use first available
+                selectedSheet = allSheetNames.first ?? ""
             }
             
             guard !selectedSheet.isEmpty else {
