@@ -22,6 +22,7 @@ enum StatusColor: Int, Comparable {
     case blue = 1
     case yellow = 2
     case purple = 3
+    case red = 4  // NEW: for UA
     
     static func < (lhs: StatusColor, rhs: StatusColor) -> Bool {
         lhs.rawValue < rhs.rawValue
@@ -33,6 +34,7 @@ enum StatusColor: Int, Comparable {
         case .blue: return .blue
         case .yellow: return .yellow
         case .purple: return .purple
+        case .red: return .red  // NEW
         }
     }
     
@@ -42,14 +44,21 @@ enum StatusColor: Int, Comparable {
         case .blue: return .blue
         case .yellow: return .orange
         case .purple: return .purple
+        case .red: return .red  // NEW
         }
     }
     
     static func from(value: String) -> StatusColor? {
         let trimmed = value.trimmingCharacters(in: .whitespaces)
         
-        if trimmed == "P" || trimmed == "UA" { return nil }
-        if trimmed == "ROTC" { return .purple }
+        // P is the only one that gets filtered out (they're done)
+        if trimmed == "P" { return nil }
+        
+        // UA shows as red
+        if trimmed == "UA" { return .red }
+        
+        // ROTC shows as purple
+        if trimmed.uppercased() == "ROTC" { return .purple }
         
         let lower = trimmed.lowercased()
         
@@ -57,14 +66,14 @@ enum StatusColor: Int, Comparable {
         if lower.hasPrefix("e (") {
             // YELLOW excuses (explicitly listed)
             if lower.contains("t-other") ||
-            lower.contains("event") ||
-            lower.contains("bag") ||
-            lower.contains("refocus") ||
-            lower.contains("sick") ||
-            lower.contains("out of town") {
+               lower.contains("event") ||
+               lower.contains("bag") ||
+               lower.contains("refocus") ||
+               lower.contains("sick") ||
+               lower.contains("out of town") {
                 return .yellow
             }
-            // BLUE excuses (everything else: other, Special Unit, Class, Work, religious, Tutoring/SI)
+            // BLUE excuses (everything else)
             return .blue
         }
         
@@ -153,7 +162,11 @@ struct ContentView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(cadet.statusColor.color.opacity(cadet.statusColor == .gray ? 1 : 0.3))
-        .foregroundColor(cadet.statusColor == .gray ? .primary : (cadet.statusColor == .yellow ? .black : cadet.statusColor.color))
+        .foregroundColor(
+            cadet.statusColor == .gray ? .primary :
+            cadet.statusColor == .yellow ? .black :
+            cadet.statusColor.color
+        )
         .cornerRadius(16)
         .overlay(
             RoundedRectangle(cornerRadius: 16)
@@ -515,28 +528,36 @@ struct ContentView: View {
         
         undoStack.append(.markPresent(cadet: cadet, previousValue: cadet.value))
         
-        // Optimistically update local state for ALL statuses
-        if status == "P" || status == "UA" {
-            // These get filtered out entirely (StatusColor.from returns nil)
+        // Get the new status color
+        let newStatusColor = StatusColor.from(value: status)
+        
+        if newStatusColor == nil {
+            // Only P gets filtered out (status returns nil)
             cadets.removeAll { $0 == cadet }
         } else {
-            // For excuses/ROTC, update the cadet in-place with new status
-            if let index = cadets.firstIndex(where: { $0 == cadet }) {
-                let newStatusColor = StatusColor.from(value: status) ?? .gray
+            // For ALL other statuses (UA, ROTC, excuses, etc), update in-place
+            if let index = cadets.firstIndex(where: { $0.row == cadet.row }) {
                 let updatedCadet = Cadet(
                     name: cadet.name,
                     lastName: cadet.lastName,
                     searchableNames: cadet.searchableNames,
                     value: status,
                     row: cadet.row,
-                    statusColor: newStatusColor,
+                    statusColor: newStatusColor!,
                     groupColor: cadet.groupColor
                 )
                 cadets[index] = updatedCadet
             }
         }
         
-        let statusEmoji = status == "P" ? "✅" : (status == "UA" ? "❌" : "📝")
+        let statusEmoji: String
+        switch status {
+        case "P": statusEmoji = "✅"
+        case "UA": statusEmoji = "❌"
+        case "ROTC": statusEmoji = "🟣"
+        default: statusEmoji = "📝"
+        }
+        
         showToast("\(statusEmoji) Marked \(cadet.lastName) as \(status)")
         
         Task {
@@ -544,12 +565,6 @@ struct ContentView: View {
                 let colLetter = await SheetsService.shared.columnLetter(for: slot.columnIndex)
                 let range = "\(selectedSheet)!\(colLetter)\(cadet.row)"
                 try await SheetsService.shared.write(range: range, values: [[status]])
-                
-                // Small delay to let Google Sheets propagate the write
-                try await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
-                
-                // Refresh from server to get ground truth
-                await loadCadets()
                 
             } catch {
                 await MainActor.run {
@@ -573,12 +588,54 @@ struct ContentView: View {
         errorMessage = nil
         
         do {
-            // Just reload cadets for the currently selected sheet and slot
-            await loadCadets()
+            // Reload cadets for the currently selected sheet and slot
+            guard let slot = selectedSlot, !selectedSheet.isEmpty else {
+                throw NSError(domain: "", code: 0, userInfo: [NSLocalizedDescriptionKey: "No slot selected"])
+            }
+            
+            let result = try await SheetsService.shared.fetchNamesValuesColorsAndStats(
+                sheet: selectedSheet,
+                columnIndex: slot.columnIndex
+            )
+            
+            let parsedCadets = result.cadets.compactMap { item -> Cadet? in
+                guard let statusColor = StatusColor.from(value: item.value) else {
+                    return nil
+                }
+                
+                let fullName = item.name
+                let lastName = fullName.components(separatedBy: ",").first?.trimmingCharacters(in: .whitespaces) ?? fullName
+                
+                var searchableNames: [String] = []
+                let nameParts = lastName.components(separatedBy: "/")
+                for part in nameParts {
+                    let trimmed = part.trimmingCharacters(in: .whitespaces)
+                    if !trimmed.isEmpty {
+                        searchableNames.append(trimmed)
+                    }
+                }
+                
+                let displayName = searchableNames.first ?? lastName
+                
+                return Cadet(
+                    name: fullName,
+                    lastName: displayName,
+                    searchableNames: searchableNames,
+                    value: item.value,
+                    row: item.row,
+                    statusColor: statusColor,
+                    groupColor: item.groupColor
+                )
+            }
+            
+            let parsedStats = result.stats.map { StatItem(label: $0.label, value: $0.value) }
             
             await MainActor.run {
+                cadets = parsedCadets
+                stats = parsedStats
                 showToast("✅ Refreshed")
             }
+            
         } catch {
             await MainActor.run {
                 errorMessage = error.localizedDescription
@@ -677,25 +734,26 @@ struct ContentView: View {
         let lower = value.lowercased()
         
         switch color {
+        case .red:
+            return "UA"  // Show UA badge
+            
         case .purple:
             return nil  // ROTC shows no code
             
         case .blue:
-            // Blue: E (other), E (Special Unit), E (Class), E (Work), E (religious), E (Tutoring/SI)
             if lower.contains("special") { return "U" }
             if lower.contains("class") { return "C" }
             if lower.contains("work") { return "W" }
             if lower.contains("religious") { return "R" }
             if lower.contains("tutoring") { return "T" }
-            return nil  // E (other) shows nothing
+            return nil
             
         case .yellow:
-            // Yellow: E (t-other), E (Event), E (bag/refocus), E (Sick), E (out of town)
             if lower.contains("event") { return "E" }
             if lower.contains("bag") || lower.contains("refocus") { return "B/R" }
             if lower.contains("sick") { return "S" }
             if lower.contains("out") { return "O" }
-            return nil  // E (t-other) shows nothing
+            return nil
             
         case .gray:
             return nil
@@ -1212,9 +1270,9 @@ struct ContentView: View {
         
         if totalMinutes < 240 {
             return todaySlots.first
-        } else if totalMinutes < 385 {
+        } else if totalMinutes < 390 {
             targetSlot = "MTT"
-        } else if totalMinutes < 900 {
+        } else if totalMinutes < 840 {
             targetSlot = "M Formo"
         } else if totalMinutes < 1050 {
             targetSlot = "ATT"
