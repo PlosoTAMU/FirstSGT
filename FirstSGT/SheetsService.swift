@@ -3,8 +3,10 @@ import Foundation
 actor SheetsService {
     static let shared = SheetsService()
     
-    // old id: let spreadsheetId = "1ugnpvlLtHRJ2qsiS4VxWjdtU8wSJEXKin1LBQdY_C2I"
-    let spreadsheetId = "1Dypmism-aeFhn-gpgnvlewHoIN0W-ajUbtqzHVW7cTE"
+    // old id: "1Dypmism-aeFhn-gpgnvlewHoIN0W-ajUbtqzHVW7cTE"
+    // Single source of truth - ContentView's "open in Sheets" link reads this too.
+    static let spreadsheetId = "1ugnpvlLtHRJ2qsiS4VxWjdtU8wSJEXKin1LBQdY_C2I"
+    let spreadsheetId = SheetsService.spreadsheetId
     let baseURL = "https://sheets.googleapis.com/v4/spreadsheets"
     // Add cache
     private var cachedSheetNames: [(name: String, sheetId: Int)]?
@@ -190,7 +192,7 @@ actor SheetsService {
     // MARK: - Fetch Header Rows
     
     func fetchHeaderRows(sheet: String) async throws -> [[String]] {
-        let range = "\(sheet)!A1:ZZ3"
+        let range = "\(sheet)!A1:ZZ2"
         return try await read(range: range)
     }
     
@@ -207,7 +209,7 @@ actor SheetsService {
         }
         
         let colLetter = columnLetter(for: columnIndex)
-        let range = "\(encodedSheet)!A4:\(colLetter)100"
+        let range = "\(encodedSheet)!A3:\(colLetter)100"
         
         let urlString = "\(baseURL)/\(spreadsheetId)?ranges=\(range)&includeGridData=true"
         guard let url = URL(string: urlString) else {
@@ -280,7 +282,7 @@ actor SheetsService {
             
             let valueCell = columnIndex < values.count ? values[columnIndex] : [:]
             let value = extractCellValue(from: valueCell) ?? "TBD"
-            let actualRow = index + 4
+            let actualRow = index + 3
             
             cadets.append((name: label, value: value, row: actualRow, groupColor: groupColor))
         }

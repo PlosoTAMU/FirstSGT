@@ -3,7 +3,10 @@ import SwiftUI
 // MARK: - Data Models
 
 struct Cadet: Identifiable, Equatable {
-    let id = UUID()
+    /// Row number is unique per cadet and stable across refreshes. A fresh UUID
+    /// per parse made every auto-refresh replace the whole grid's view identity,
+    /// which tore down bubbles mid-tap.
+    var id: Int { row }
     let name: String
     let lastName: String
     let searchableNames: [String]
@@ -109,7 +112,6 @@ enum UndoAction {
 struct ContentView: View {
     @State private var refreshTimer: Timer?
     @State private var selectedCadetForStatus: Cadet?
-    @State private var showStatusPicker = false
 
     @State private var allSheetNames: [String] = []
     @State private var sheetsWithIds: [(name: String, sheetId: Int)] = []
@@ -175,7 +177,6 @@ struct ContentView: View {
         )
         .onTapGesture {
             selectedCadetForStatus = cadet
-            showStatusPicker = true
         }
         .onLongPressGesture {
             Task {
@@ -280,22 +281,18 @@ struct ContentView: View {
         .sheet(isPresented: $showStatsSheet) {
             statsView
         }
-        .sheet(isPresented: $showStatusPicker) {
-            if let cadet = selectedCadetForStatus {
-                StatusPickerView(
-                    cadet: cadet,
-                    onSelect: { status in
-                        markWithStatus(cadet, status: status)
-                        showStatusPicker = false
-                        selectedCadetForStatus = nil
-                    },
-                    onCancel: {
-                        showStatusPicker = false
-                        selectedCadetForStatus = nil
-                    }
-                )
-                .presentationDetents([.medium, .large])
-            }
+        .sheet(item: $selectedCadetForStatus) { cadet in
+            StatusPickerView(
+                cadet: cadet,
+                onSelect: { status in
+                    markWithStatus(cadet, status: status)
+                    selectedCadetForStatus = nil
+                },
+                onCancel: {
+                    selectedCadetForStatus = nil
+                }
+            )
+            .presentationDetents([.medium, .large])
         }
         .alert("\(selectedCadetForComment?.lastName ?? "Cadet")", isPresented: $showCommentAlert) {
             Button("OK") { }
@@ -400,7 +397,7 @@ struct ContentView: View {
     }
 
     private func openInGoogleSheets() {
-        let spreadsheetId = "1Dypmism-aeFhn-gpgnvlewHoIN0W-ajUbtqzHVW7cTE"
+        let spreadsheetId = SheetsService.spreadsheetId
         
         // Find the gid for the currently selected sheet
         if let sheetInfo = sheetsWithIds.first(where: { $0.name == selectedSheet }) {
@@ -600,6 +597,8 @@ struct ContentView: View {
 
     private func refreshCadetsQuietly() async {
         guard let slot = selectedSlot, !selectedSheet.isEmpty else { return }
+        // Never mutate the roster while a picker/sheet is open on top of it.
+        guard selectedCadetForStatus == nil, !showStatsSheet, !showCommentAlert else { return }
         
         do {
             let data = try await SheetsService.shared.fetchNamesValuesColorsAndStats(
@@ -972,11 +971,12 @@ struct ContentView: View {
         do {
             let headers = try await SheetsService.shared.fetchHeaderRows(sheet: selectedSheet)
             
-            let row2 = headers.count > 1 ? headers[1] : []
-            let row3 = headers.count > 2 ? headers[2] : []
+            // Row 1 = day names, row 2 = slot names, cadets start at row 3.
+            let dayRow = headers.count > 0 ? headers[0] : []
+            let slotRow = headers.count > 1 ? headers[1] : []
             
             await MainActor.run {
-                allSlots = buildColumnMap(dayRow: row2, slotRow: row3)
+                allSlots = buildColumnMap(dayRow: dayRow, slotRow: slotRow)
                 todaySlots = filterTodaySlots()
                 selectedSlot = autoSelectSlot()
             }
@@ -1074,16 +1074,41 @@ struct ContentView: View {
         return (nil, true)
     }
     
-    private func findTemplateSheetId() -> Int? {
-        // Look for baseline template sheet (contains "TEMPLATE" and doesn't have date format)
-        let templateName = sheetsWithIds
-            .first { sheet in
-                let name = sheet.name.uppercased()
-                return name.contains("TEMPLATE") && name.contains("BASELINE")
-            }
+    private enum Semester: String {
+        case fall = "FALL"
+        case spring = "SPRING"
+    }
+    
+    /// Fall runs Aug 1 - Dec 9; spring runs Dec 10 - Jul 31.
+    private func currentSemester(for date: Date = Date()) -> Semester {
+        let calendar = Calendar.current
+        let month = calendar.component(.month, from: date)
+        let day = calendar.component(.day, from: date)
         
-        if let template = templateName {
-            print("📋 Using template: \(template.name) (ID: \(template.sheetId))")
+        if month == 12 {
+            return day >= 10 ? .spring : .fall
+        }
+        return month >= 8 ? .fall : .spring
+    }
+    
+    private func findTemplateSheetId() -> Int? {
+        // Baseline template tabs, e.g. "FALL '26 - BASELINE TEMPLATE DO NOT CHANGE"
+        let templates = sheetsWithIds.filter { sheet in
+            let name = sheet.name.uppercased()
+            return name.contains("TEMPLATE") && name.contains("BASELINE")
+        }
+        
+        let semester = currentSemester()
+        
+        // Prefer the template for the current semester.
+        if let match = templates.first(where: { $0.name.uppercased().contains(semester.rawValue) }) {
+            print("📋 Using \(semester.rawValue) template: \(match.name) (ID: \(match.sheetId))")
+            return match.sheetId
+        }
+        
+        // No semester-specific template - use any baseline template rather than failing.
+        if let template = templates.first {
+            print("⚠️ No \(semester.rawValue) template found; falling back to: \(template.name) (ID: \(template.sheetId))")
             return template.sheetId
         }
         
