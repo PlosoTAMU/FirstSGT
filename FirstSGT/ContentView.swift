@@ -263,13 +263,11 @@ struct ContentView: View {
         .onDisappear {
             stopAutoRefresh()
         }
-        .confirmationDialog("Create New Sheet?", isPresented: $showNewSheetConfirmation, titleVisibility: .visible) {
-            Button(existingSheetForThisWeek.map { "Go to \($0)" } ?? "Create \(generateNewSheetName())") {
+        .confirmationDialog(newSheetDialogTitle, isPresented: $showNewSheetConfirmation, titleVisibility: .visible) {
+            Button(newSheetConfirmButtonTitle) {
                 Task { await createNewSheetManually() }
             }
             Button("Cancel", role: .cancel) { }
-        } message: {
-            Text(newSheetConfirmationMessage)
         }
         .alert("New Sheet Created", isPresented: $showSheetCreatedAlert) {
             Button("OK") { }
@@ -842,17 +840,18 @@ struct ContentView: View {
         return weekSheetNames.contains(generated) ? generated : nil
     }
 
-    private var newSheetConfirmationMessage: String {
-        guard !sheetsWithIds.isEmpty else { return "Loading sheets..." }
+    private var newSheetDialogTitle: String {
         if let existing = existingSheetForThisWeek {
-            return "\(existing) already covers this week. This will switch to it."
+            return "\(existing) already covers this week"
         }
-        let name = generateNewSheetName()
-        if let templateId = findTemplateSheetId(),
-           let template = sheetsWithIds.first(where: { $0.sheetId == templateId }) {
-            return "Creates \(name) from \(template.name)."
+        return "Create new sheet for \(generateNewSheetName())?"
+    }
+
+    private var newSheetConfirmButtonTitle: String {
+        if let existing = existingSheetForThisWeek {
+            return "Go to \(existing)"
         }
-        return "No template sheet found - creation will fail."
+        return "Yes, create it"
     }
 
     /// Manual version of the auto-create that runs on launch. Switches to the
