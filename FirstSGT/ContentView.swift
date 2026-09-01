@@ -92,7 +92,7 @@ struct ColumnSlot: Identifiable, Hashable {
     let columnIndex: Int
     
     var displayName: String {
-        "\(day) \(slot)"
+        day.isEmpty ? slot : "\(day) \(slot)"
     }
 }
 
@@ -104,7 +104,6 @@ struct StatItem: Identifiable {
 
 enum UndoAction {
     case markPresent(cadet: Cadet, previousValue: String)
-    case markAllUA(cadets: [Cadet], previousValues: [String])
 }
 
 // MARK: - Main View
@@ -114,9 +113,10 @@ struct ContentView: View {
     @State private var selectedCadetForStatus: Cadet?
 
     @State private var allSheetNames: [String] = []
+    @State private var weekSheetNames: [String] = []
+    @State private var otherSheetNames: [String] = []
     @State private var sheetsWithIds: [(name: String, sheetId: Int)] = []
     @State private var selectedSheet: String = ""
-    @State private var showSheetPicker = false
     
     @State private var allSlots: [ColumnSlot] = []
     @State private var todaySlots: [ColumnSlot] = []
@@ -133,8 +133,8 @@ struct ContentView: View {
     @State private var errorMessage: String?
     @State private var toastMessage: String?
     
-    @State private var showUAConfirmation = false
-    @State private var isMarkingUA = false
+    @State private var showNewSheetConfirmation = false
+    @State private var isCreatingSheet = false
     
     @State private var undoStack: [UndoAction] = []
     @State private var isUndoing = false
@@ -263,15 +263,13 @@ struct ContentView: View {
         .onDisappear {
             stopAutoRefresh()
         }
-        .confirmationDialog("Mark All TBD as UA?", isPresented: $showUAConfirmation, titleVisibility: .visible) {
-            let tbdCount = cadets.filter { $0.statusColor == .gray }.count
-            Button("Mark \(tbdCount) TBD cadets as UA", role: .destructive) {
-                Task { await markAllAsUA() }
+        .confirmationDialog("Create New Sheet?", isPresented: $showNewSheetConfirmation, titleVisibility: .visible) {
+            Button(existingSheetForThisWeek.map { "Go to \($0)" } ?? "Create \(generateNewSheetName())") {
+                Task { await createNewSheetManually() }
             }
             Button("Cancel", role: .cancel) { }
         } message: {
-            let tbdCount = cadets.filter { $0.statusColor == .gray }.count
-            Text("This will mark all \(tbdCount) TBD (gray) cadets as Unexcused Absence (UA). This can be undone.")
+            Text(newSheetConfirmationMessage)
         }
         .alert("New Sheet Created", isPresented: $showSheetCreatedAlert) {
             Button("OK") { }
@@ -332,19 +330,26 @@ struct ContentView: View {
             Spacer()
             
             VStack(spacing: 4) {
-                Button(action: { showSheetPicker = true }) {
+                Menu {
+                    if !weekSheetNames.isEmpty {
+                        Section("Weeks") {
+                            ForEach(weekSheetNames, id: \.self) { name in
+                                Button(name) { selectSheet(name) }
+                            }
+                        }
+                    }
+                    if !otherSheetNames.isEmpty {
+                        Section("Other") {
+                            ForEach(otherSheetNames, id: \.self) { name in
+                                Button(name) { selectSheet(name) }
+                            }
+                        }
+                    }
+                } label: {
                     HStack {
                         Text("Week: \(selectedSheet)")
                             .font(.headline)
                         Image(systemName: "chevron.down").font(.caption)
-                    }
-                }
-                .confirmationDialog("Select Week", isPresented: $showSheetPicker) {
-                    ForEach(allSheetNames, id: \.self) { name in
-                        Button(name) {
-                            selectedSheet = name
-                            Task { await loadSlots() }
-                        }
                     }
                 }
                 
@@ -381,17 +386,17 @@ struct ContentView: View {
             }
             .disabled(stats.isEmpty)
             
-            Button(action: { showUAConfirmation = true }) {
-                if isMarkingUA {
+            Button(action: { showNewSheetConfirmation = true }) {
+                if isCreatingSheet {
                     ProgressView()
                         .frame(width: 44, height: 44)
                 } else {
-                    Image(systemName: "exclamationmark.triangle.fill")
+                    Image(systemName: "doc.badge.plus")
                         .font(.title2)
                         .foregroundColor(.orange)
                 }
             }
-            .disabled(cadets.isEmpty || isMarkingUA)
+            .disabled(isCreatingSheet || isLoading)
         }
         .padding()
     }
@@ -821,40 +826,88 @@ struct ContentView: View {
         }
     }
     
-    // MARK: - Mark All UA
-    
-    private func markAllAsUA() async {
-        guard let slot = selectedSlot else { return }
-        isMarkingUA = true
-        
-        // Only mark gray (TBD) cadets
-        let cadetsToMark = cadets.filter { $0.statusColor == .gray }
-        let previousValues = cadetsToMark.map { $0.value }
-        
-        // Save for undo
-        undoStack.append(.markAllUA(cadets: cadetsToMark, previousValues: previousValues))
-        
-        for cadet in cadetsToMark {
-            do {
-                let colLetter = await SheetsService.shared.columnLetter(for: slot.columnIndex)
-                let range = "\(selectedSheet)!\(colLetter)\(cadet.row)"
-                try await SheetsService.shared.write(range: range, values: [["UA"]])
-                await MainActor.run { cadets.removeAll { $0 == cadet } }
-            } catch {
-                continue
-            }
+    // MARK: - New Sheet
+
+    private func selectSheet(_ name: String) {
+        selectedSheet = name
+        Task { await loadSlots() }
+    }
+
+    /// A tab already covering this week. Matched by date range, not by name -
+    /// existing tabs aren't consistently Sunday-based (8/31-9/4 vs 8/23-8/28),
+    /// so a name comparison would miss and duplicate the week.
+    private var existingSheetForThisWeek: String? {
+        if let match = autoSelectSheetOrCreate().0 { return match }
+        let generated = generateNewSheetName()
+        return weekSheetNames.contains(generated) ? generated : nil
+    }
+
+    private var newSheetConfirmationMessage: String {
+        guard !sheetsWithIds.isEmpty else { return "Loading sheets..." }
+        if let existing = existingSheetForThisWeek {
+            return "\(existing) already covers this week. This will switch to it."
         }
-        
-        await MainActor.run {
-            isMarkingUA = false
-            if cadetsToMark.isEmpty {
-                showToast("⚠️ No TBD cadets to mark")
-            } else {
-                showToast("✅ Marked \(cadetsToMark.count) TBD cadets as UA")
+        let name = generateNewSheetName()
+        if let templateId = findTemplateSheetId(),
+           let template = sheetsWithIds.first(where: { $0.sheetId == templateId }) {
+            return "Creates \(name) from \(template.name)."
+        }
+        return "No template sheet found - creation will fail."
+    }
+
+    /// Manual version of the auto-create that runs on launch. Switches to the
+    /// week's sheet if it already exists instead of duplicating it.
+    private func createNewSheetManually() async {
+        await MainActor.run { isCreatingSheet = true }
+        await performNewSheetCreation()
+        await MainActor.run { isCreatingSheet = false }
+    }
+
+    private func performNewSheetCreation() async {
+        let newSheetName = generateNewSheetName()
+        guard !newSheetName.isEmpty else {
+            await MainActor.run { showToast("❌ Could not determine week") }
+            return
+        }
+
+        do {
+            // Refresh first so a sheet someone else just made counts as existing.
+            let refreshed = try await SheetsService.shared.fetchSheetNamesWithIds(forceRefresh: true)
+            await MainActor.run { applySheetList(refreshed) }
+
+            if let existing = await MainActor.run(body: { existingSheetForThisWeek }) {
+                await MainActor.run {
+                    selectedSheet = existing
+                    showToast("ℹ️ \(existing) already exists")
+                }
+                await loadSlots()
+                return
             }
+
+            guard let templateId = findTemplateSheetId() else {
+                await MainActor.run { showToast("❌ No template sheet found") }
+                return
+            }
+
+            try await SheetsService.shared.copySheet(
+                sourceSheetId: templateId,
+                newTitle: newSheetName,
+                insertAtIndex: 1
+            )
+
+            let updated = try await SheetsService.shared.fetchSheetNamesWithIds(forceRefresh: true)
+            await MainActor.run {
+                applySheetList(updated)
+                selectedSheet = newSheetName
+                createdSheetName = newSheetName
+                showSheetCreatedAlert = true
+            }
+            await loadSlots()
+        } catch {
+            await MainActor.run { showToast("❌ Failed to create sheet") }
         }
     }
-    
+
     // MARK: - Undo
     
     private func performUndo() async {
@@ -871,20 +924,7 @@ struct ContentView: View {
                     cadets.append(cadet)
                     showToast("↩️ Restored \(cadet.lastName)")
                 }
-                
-            case .markAllUA(let cadetList, let previousValues):
-                for (index, cadet) in cadetList.enumerated() {
-                    let colLetter = await SheetsService.shared.columnLetter(for: slot.columnIndex)
-                    let range = "\(selectedSheet)!\(colLetter)\(cadet.row)"
-                    let prevValue = index < previousValues.count ? previousValues[index] : "TBD"
-                    try await SheetsService.shared.write(range: range, values: [[prevValue]])
-                    await MainActor.run {
-                        cadets.append(cadet)
-                    }
-                }
-                await MainActor.run {
-                    showToast("↩️ Restored \(cadetList.count) cadets")
-                }
+
             }
         } catch {
             await MainActor.run {
@@ -913,10 +953,8 @@ struct ContentView: View {
         errorMessage = nil
         
         do {
-            sheetsWithIds = try await SheetsService.shared.fetchSheetNamesWithIds()
-            allSheetNames = sheetsWithIds
-                .map { $0.name }
-                .filter { $0.contains("-") && $0.contains("/") }
+            let fetched = try await SheetsService.shared.fetchSheetNamesWithIds()
+            applySheetList(fetched)
             
             let (selected, needsCreation) = autoSelectSheetOrCreate()
             
@@ -938,17 +976,17 @@ struct ContentView: View {
                     }
                     
                     // Refresh sheet list after creation
-                    sheetsWithIds = try await SheetsService.shared.fetchSheetNamesWithIds(forceRefresh: true)
-                    allSheetNames = sheetsWithIds.map { $0.name }.filter { $0.contains("-") && $0.contains("/") }
+                    let refreshed = try await SheetsService.shared.fetchSheetNamesWithIds(forceRefresh: true)
+                    applySheetList(refreshed)
                     selectedSheet = newSheetName
                 } catch {
                     // Sheet creation failed (probably already exists) - just use first available
                     print("⚠️ Sheet creation failed: \(error.localizedDescription)")
-                    selectedSheet = allSheetNames.first ?? ""
+                    selectedSheet = weekSheetNames.first ?? allSheetNames.first ?? ""
                 }
             } else {
                 // No auto-selection and no template - use first available
-                selectedSheet = allSheetNames.first ?? ""
+                selectedSheet = weekSheetNames.first ?? allSheetNames.first ?? ""
             }
             
             guard !selectedSheet.isEmpty else {
@@ -1052,12 +1090,31 @@ struct ContentView: View {
     
     // MARK: - Helper Functions
     
+    /// Splits the spreadsheet's tabs into date-range weeks and everything else
+    /// (task/event tabs like "Football"), hiding the baseline templates.
+    private func applySheetList(_ sheets: [(name: String, sheetId: Int)]) {
+        sheetsWithIds = sheets
+        
+        let visible = sheets.map { $0.name }.filter { name in
+            let upper = name.uppercased()
+            return !(upper.contains("TEMPLATE") || upper.contains("BASELINE"))
+        }
+        
+        weekSheetNames = visible.filter { isWeekSheetName($0) }
+        otherSheetNames = visible.filter { !isWeekSheetName($0) }
+        allSheetNames = weekSheetNames + otherSheetNames
+    }
+    
+    private func isWeekSheetName(_ name: String) -> Bool {
+        name.contains("-") && name.contains("/")
+    }
+    
     private func autoSelectSheetOrCreate() -> (String?, Bool) {
         let today = Date()
         let calendar = Calendar.current
         let weekday = calendar.component(.weekday, from: today)
         
-        for sheetName in allSheetNames {
+        for sheetName in weekSheetNames {
             guard let (startDate, endDate) = parseDateRange(sheetName) else { continue }
             
             switch weekday {
@@ -1192,8 +1249,10 @@ struct ContentView: View {
             
             let slotName = index < slotRow.count ? slotRow[index] : ""
             
-            guard !slotName.isEmpty, !currentDay.isEmpty else { continue }
+            guard !slotName.isEmpty else { continue }
             
+            // Task/event tabs (Football, Spring 26 Tasks) have a blank day row -
+            // the column name alone is the slot.
             slots.append(ColumnSlot(day: currentDay, slot: slotName, columnIndex: index))
         }
         

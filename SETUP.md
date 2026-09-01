@@ -15,7 +15,7 @@ Hardcoded values you must change:
 
 | Value | File | Line |
 |---|---|---|
-| Spreadsheet ID | `FirstSGT/SheetsService.swift` | 7 |
+| Spreadsheet ID | `FirstSGT/SheetsService.swift` | 8 |
 | Service-account JSON filename | `FirstSGT/GoogleAuthService.swift` | 25 |
 | Bundle identifier `com.ploso.FirstSGT` | `FirstSGT.xcodeproj/project.pbxproj` | 272 |
 | Development team `74JNGCVVMG` | `FirstSGT.xcodeproj/project.pbxproj` | 257 |
@@ -192,9 +192,9 @@ in A3 down, and the stats block — but attendance columns blank.
    ```swift
    guard let url = Bundle.main.url(forResource: "myproject-a1b2c3d4e5f6", withExtension: "json"),
    ```
-5. Edit `FirstSGT/SheetsService.swift` line 7 — paste your spreadsheet ID:
+5. Edit `FirstSGT/SheetsService.swift` line 8 — paste your spreadsheet ID:
    ```swift
-   let spreadsheetId = "YOUR_SPREADSHEET_ID"
+   static let spreadsheetId = "YOUR_SPREADSHEET_ID"
    ```
 6. Build to the simulator (⌘R) to confirm it loads tabs and cadets before you
    bother with signing. Console logs `📖 [read] GET …` on success and
@@ -296,13 +296,13 @@ https://sidestore.io/docs against these steps before starting.
 |---|---|
 | Immediate crash / `missingCredentials` | JSON not in Copy Bundle Resources, or filename in `GoogleAuthService.swift:25` doesn't match |
 | `❌ [read] HTTP 403` | Spreadsheet not shared with the service-account `client_email`, or Sheets API not enabled |
-| `❌ [read] HTTP 404` | Wrong spreadsheet ID in `SheetsService.swift:7` |
-| Tab list loads but no cadets | Names not starting at row 4, or column A cells are dark gray (treated as hidden) |
-| No slots to pick | Row 2 day names or row 3 slot names empty; both are required per column |
+| `❌ [read] HTTP 404` | Wrong spreadsheet ID in `SheetsService.swift:8` |
+| Tab list loads but no cadets | Names not starting at row 3, or column A cells are dark gray (treated as hidden) |
+| No slots to pick | Row 2 slot names empty. Row 1 day names are optional — tabs without them (Football, Tasks) list the row 2 name alone |
 | Everyone shows gray | Status strings don't match `P`/`UA`/`ROTC`/`E (...)` |
 | Stats all zero | No row in column A exactly equal to `Present` |
 | App creates a new tab every day | Existing tab name isn't `M/d-M/d` format |
-| Stale tab list | Sheet names are cached 5 minutes (`SheetsService.swift:13`) |
+| Stale tab list | Sheet names are cached 5 minutes (`SheetsService.swift:15`) |
 | App won't launch after a week | Free-account 7-day expiry; refresh in SideStore |
 
 ## Security
