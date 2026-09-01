@@ -831,27 +831,23 @@ struct ContentView: View {
         Task { await loadSlots() }
     }
 
-    /// A tab already covering this week. Matched by date range, not by name -
-    /// existing tabs aren't consistently Sunday-based (8/31-9/4 vs 8/23-8/28),
-    /// so a name comparison would miss and duplicate the week.
-    private var existingSheetForThisWeek: String? {
-        if let match = autoSelectSheetOrCreate().0 { return match }
-        let generated = generateNewSheetName()
-        return weekSheetNames.contains(generated) ? generated : nil
+    /// The New Sheet button builds NEXT week - this week's tab already exists
+    /// by the time anyone needs it, and next week is what has to be set up ahead.
+    private var nextWeekSheetName: String {
+        weekSheetName(weeksAhead: 1)
+    }
+    
+    private var existingNextWeekSheet: String? {
+        if let start = sunday(weeksAhead: 1), let match = weekSheetCovering(start) { return match }
+        return weekSheetNames.contains(nextWeekSheetName) ? nextWeekSheetName : nil
     }
 
     private var newSheetDialogTitle: String {
-        if let existing = existingSheetForThisWeek {
-            return "\(existing) already covers this week"
-        }
-        return "Create new sheet for \(generateNewSheetName())?"
+        "Create new sheet for \(nextWeekSheetName)?"
     }
 
     private var newSheetConfirmButtonTitle: String {
-        if let existing = existingSheetForThisWeek {
-            return "Go to \(existing)"
-        }
-        return "Yes, create it"
+        "Yes, create it"
     }
 
     /// Manual version of the auto-create that runs on launch. Switches to the
@@ -863,7 +859,7 @@ struct ContentView: View {
     }
 
     private func performNewSheetCreation() async {
-        let newSheetName = generateNewSheetName()
+        let newSheetName = nextWeekSheetName
         guard !newSheetName.isEmpty else {
             await MainActor.run { showToast("❌ Could not determine week") }
             return
@@ -874,7 +870,7 @@ struct ContentView: View {
             let refreshed = try await SheetsService.shared.fetchSheetNamesWithIds(forceRefresh: true)
             await MainActor.run { applySheetList(refreshed) }
 
-            if let existing = await MainActor.run(body: { existingSheetForThisWeek }) {
+            if let existing = await MainActor.run(body: { existingNextWeekSheet }) {
                 await MainActor.run {
                     selectedSheet = existing
                     showToast("ℹ️ \(existing) already exists")
@@ -1183,19 +1179,42 @@ struct ContentView: View {
     }
     
     private func generateNewSheetName() -> String {
+        weekSheetName(weeksAhead: 0)
+    }
+    
+    /// Sunday of the week `weeksAhead` from today.
+    private func sunday(weeksAhead: Int) -> Date? {
         let calendar = Calendar.current
         let today = Date()
         let weekday = calendar.component(.weekday, from: today)
         
         let daysToSubtract = weekday == 1 ? 0 : weekday - 1
-        guard let sunday = calendar.date(byAdding: .day, value: -daysToSubtract, to: today),
-              let friday = calendar.date(byAdding: .day, value: 5, to: sunday)
+        guard let thisSunday = calendar.date(byAdding: .day, value: -daysToSubtract, to: today)
+        else { return nil }
+        
+        return calendar.date(byAdding: .day, value: 7 * weeksAhead, to: thisSunday)
+    }
+    
+    private func weekSheetName(weeksAhead: Int) -> String {
+        let calendar = Calendar.current
+        guard let start = sunday(weeksAhead: weeksAhead),
+              let friday = calendar.date(byAdding: .day, value: 5, to: start)
         else { return "" }
         
         let formatter = DateFormatter()
         formatter.dateFormat = "M/d"
         
-        return "\(formatter.string(from: sunday))-\(formatter.string(from: friday))"
+        return "\(formatter.string(from: start))-\(formatter.string(from: friday))"
+    }
+    
+    /// Existing week tab whose date range contains `date`. Matched by range
+    /// rather than by name because tabs aren't consistently Sunday-based
+    /// (8/31-9/4 alongside 8/23-8/28), so a name comparison would miss.
+    private func weekSheetCovering(_ date: Date) -> String? {
+        weekSheetNames.first { name in
+            guard let (start, end) = parseDateRange(name) else { return false }
+            return date >= start && date <= end
+        }
     }
     
     private func parseDateRange(_ sheetName: String) -> (Date, Date)? {
